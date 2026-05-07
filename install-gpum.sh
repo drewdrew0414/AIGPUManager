@@ -22,9 +22,7 @@ version_ge() {
   awk -v a="$(normalize_version "$1")" -v b="$(normalize_version "$2")" '
     function splitver(v, out, n, i) {
       n = split(v, out, /\./)
-      for (i = n + 1; i <= 4; i++) {
-        out[i] = 0
-      }
+      for (i = n + 1; i <= 4; i++) out[i] = 0
     }
     BEGIN {
       splitver(a, av)
@@ -66,12 +64,40 @@ download_release() {
   mv "$tmp_jar" "$TARGET_JAR"
 }
 
+ensure_path() {
+  case ":$PATH:" in
+    *":$INSTALL_DIR:"*) 
+      return 0
+      ;;
+  esac
+
+  PROFILE="$HOME/.profile"
+
+  if [ -n "${BASH_VERSION:-}" ]; then
+    PROFILE="$HOME/.bashrc"
+  elif [ -n "${ZSH_VERSION:-}" ]; then
+    PROFILE="$HOME/.zshrc"
+  fi
+
+  echo "Adding $INSTALL_DIR to PATH in $PROFILE"
+
+  {
+    echo ""
+    echo "# Added by gpum installer"
+    echo "export PATH=\"$INSTALL_DIR:\$PATH\""
+  } >> "$PROFILE"
+
+  echo "PATH updated."
+  echo "👉 apply now: source $PROFILE"
+}
+
 require_command curl
 require_command java
 mkdir -p "$INSTALL_DIR"
 
 REMOTE_VERSION="$(curl -fsSL "$RELEASE_VERSION_URL" | tr -d '\r\n')"
 REMOTE_VERSION="$(normalize_version "$REMOTE_VERSION")"
+
 if [ -z "$REMOTE_VERSION" ]; then
   echo "ERROR: remote version string is empty." >&2
   exit 1
@@ -83,28 +109,24 @@ if LOCAL_VERSION="$(installed_version)"; then
 fi
 
 if [ -n "$LOCAL_VERSION" ] && version_ge "$LOCAL_VERSION" "$REMOTE_VERSION"; then
-  echo "gpum $LOCAL_VERSION is already installed at $TARGET_JAR"
-  echo "Remote release $REMOTE_VERSION is not newer. Pass."
+  echo "gpum $LOCAL_VERSION is already installed"
   write_launcher
+  ensure_path
   exit 0
 fi
 
 if [ -n "$LOCAL_VERSION" ]; then
-  printf 'Installed version %s is lower than remote version %s. Upgrade? [y/N] ' "$LOCAL_VERSION" "$REMOTE_VERSION"
+  printf 'Upgrade %s → %s ? [y/N] ' "$LOCAL_VERSION" "$REMOTE_VERSION"
   read -r answer
   case "${answer:-N}" in
     y|Y|yes|YES) ;;
-    *)
-      echo "Cancelled."
-      exit 0
-      ;;
+    *) echo "Cancelled."; exit 0 ;;
   esac
 fi
 
 download_release
 write_launcher
+ensure_path
 
 echo "Installed gpum $REMOTE_VERSION"
-echo "Launcher: $TARGET_LAUNCHER"
-echo "Jar: $TARGET_JAR"
-echo "Run with: $TARGET_LAUNCHER --help"
+echo "Run: gpum --help"
