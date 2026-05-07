@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 
 :: -----------------------------
 :: Config
@@ -26,69 +26,90 @@ where java >nul 2>nul || (
 
 where curl >nul 2>nul || (
   echo ERROR: curl not found in PATH
-  echo Windows 10+ should include curl by default.
   exit /b 1
 )
 
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 
 :: -----------------------------
-:: Fetch remote version (curl)
+:: Fetch remote version
 :: -----------------------------
-for /f "delims=" %%V in ('curl -L --fail "%RELEASE_VERSION_URL%"') do set "REMOTE_VERSION=%%V"
+for /f "delims=" %%V in ('
+  curl -fsSL "%RELEASE_VERSION_URL%"
+') do (
+  set "REMOTE_VERSION=%%V"
+)
+
+:: trim CR/LF/spaces
+for /f "tokens=* delims= " %%A in ("!REMOTE_VERSION!") do (
+  set "REMOTE_VERSION=%%A"
+)
 
 if not defined REMOTE_VERSION (
   echo ERROR: failed to fetch remote version
   exit /b 1
 )
 
-:: trim spaces + remove CR
-for /f "tokens=* delims= " %%A in ("%REMOTE_VERSION%") do set "REMOTE_VERSION=%%A"
-
 :: -----------------------------
 :: Local version
 :: -----------------------------
 if exist "%TARGET_JAR%" (
-  for /f "tokens=2 delims= " %%V in ('java --enable-native-access=ALL-UNNAMED -jar "%TARGET_JAR%" --version 2^>nul') do set "LOCAL_VERSION=%%V"
+  for /f "tokens=2 delims= " %%V in ('
+    java --enable-native-access=ALL-UNNAMED -jar "%TARGET_JAR%" --version 2^>nul
+  ') do (
+    set "LOCAL_VERSION=%%V"
+  )
 )
 
 :: -----------------------------
-:: Version compare (PowerShell only for logic)
+:: Version compare
 :: -----------------------------
 if defined LOCAL_VERSION (
-  for /f "usebackq delims=" %%R in (`
-    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$l=[Version]('%LOCAL_VERSION%'.TrimStart('v')); ^
-     $r=[Version]('%REMOTE_VERSION%'.TrimStart('v')); ^
-     if ($l -ge $r) { 'GE' } else { 'LT' }"
-  `) do set "CMP=%%R"
 
-  if /i "%CMP%"=="GE" (
-    echo Already up-to-date (%LOCAL_VERSION%)
-    goto :write_launcher
+  for /f %%R in ('
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$l=[Version]('!LOCAL_VERSION!'.TrimStart('v')); ^
+     $r=[Version]('!REMOTE_VERSION!'.TrimStart('v')); ^
+     if ($l -ge $r) { 'GE' } else { 'LT' }"
+  ') do (
+    set "CMP=%%R"
   )
 
-  choice /M "Upgrade %LOCAL_VERSION% -> %REMOTE_VERSION% ?"
-  if errorlevel 2 exit /b 0
+  if /i "!CMP!"=="GE" (
+    echo Already up-to-date ^(!LOCAL_VERSION!^)
+    goto after_download
+  )
+
+  echo Installed version !LOCAL_VERSION!
+  echo Remote version    !REMOTE_VERSION!
+  choice /M "Upgrade"
+
+  if errorlevel 2 (
+    echo Cancelled.
+    exit /b 0
+  )
 )
 
 :: -----------------------------
-:: Download (curl only)
+:: Download
 :: -----------------------------
-echo Downloading gpum %REMOTE_VERSION%...
+echo Downloading gpum !REMOTE_VERSION!...
 
-curl -L --fail "%RELEASE_JAR_URL%" -o "%TARGET_JAR%.tmp"
+curl -fsSL "%RELEASE_JAR_URL%" -o "%TARGET_JAR%.tmp"
+
 if errorlevel 1 (
   echo ERROR: download failed
+  if exist "%TARGET_JAR%.tmp" del /q "%TARGET_JAR%.tmp"
   exit /b 1
 )
 
 move /Y "%TARGET_JAR%.tmp" "%TARGET_JAR%" >nul
 
+:after_download
+
 :: -----------------------------
-:: Launcher
+:: Write launcher
 :: -----------------------------
-:write_launcher
 (
 echo @echo off
 echo setlocal
@@ -101,24 +122,27 @@ echo java --enable-native-access=ALL-UNNAMED -jar "%%GPUM_JAR%%" %%*
 ) > "%TARGET_CMD%"
 
 :: -----------------------------
-:: PATH (safe)
+:: PATH update
 :: -----------------------------
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$dir='%INSTALL_DIR%'; ^
    $p=[Environment]::GetEnvironmentVariable('Path','User'); ^
+   if (-not $p) { $p='' }; ^
    if ($p -notlike '*'+$dir+'*') { ^
-     [Environment]::SetEnvironmentVariable('Path',$p+';'+$dir,'User'); ^
+     [Environment]::SetEnvironmentVariable('Path', ($p.TrimEnd(';') + ';' + $dir), 'User'); ^
      Write-Host 'Added to PATH'; ^
    }"
+
+set "PATH=%INSTALL_DIR%;%PATH%"
 
 :: -----------------------------
 :: Done
 :: -----------------------------
-set "PATH=%INSTALL_DIR%;%PATH%"
-
 echo.
-echo Installed gpum %REMOTE_VERSION%
+echo Installed gpum !REMOTE_VERSION!
+echo Launcher: %TARGET_CMD%
 echo Run: gpum --help
-echo (Restart terminal if needed)
+echo.
+echo Restart terminal if command is not recognized.
 
 endlocal
