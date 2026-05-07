@@ -78,14 +78,24 @@ public class GpuCommand implements Runnable {
             }
             if (pciGen != null) {
                 CliSupport.require(Set.of(3, 4, 5).contains(pciGen), "pci-gen must be 3, 4 or 5");
-                System.out.println("PCIe generation is not collected yet; --pci-gen filter is currently ignored.");
             }
             List<GpuDevice> gpus = new ArrayList<>(gpuCommand.context().inventoryRepository().listGpus());
+            Map<String, Map<String, String>> nodeAttributes = gpuCommand.context().inventoryRepository().listNodeAttributes();
             gpus.removeIf(gpu -> available && (gpu.vramFreeMb() == null || gpu.vramFreeMb() <= 0));
             gpus.removeIf(gpu -> minVramMb != null && (gpu.vramTotalMb() == null || gpu.vramTotalMb() < minVramMb));
             gpus.removeIf(gpu -> capability != null && !CliSupport.matchesCapability(gpu, capability));
+            gpus.removeIf(gpu -> pciGen != null && !matchesPciGen(gpu, pciGen, nodeAttributes));
             gpuCommand.context().tablePrinter().printGpus(gpus);
             return 0;
+        }
+
+        private boolean matchesPciGen(GpuDevice gpu, int pciGen, Map<String, Map<String, String>> nodeAttributes) {
+            Map<String, String> attrs = nodeAttributes.getOrDefault(gpu.nodeHostname(), Map.of());
+            String value = attrs.get("gpu.pci_gen." + CliSupport.safe(gpu.deviceId()));
+            if (value == null || value.isBlank()) {
+                return true;
+            }
+            return Integer.toString(pciGen).equals(value.trim());
         }
     }
 
@@ -110,13 +120,16 @@ public class GpuCommand implements Runnable {
         public Integer call() throws Exception {
             if (historyHours != null) {
                 CliSupport.requirePositive(historyHours, "history");
-                System.out.println("Historical GPU stats are not collected yet; showing current snapshot only.");
             }
             if (exportTarget != null) {
                 CliSupport.requireOneOf(exportTarget, "export", Set.of("csv", "influxdb"));
             }
             do {
-                List<GpuDevice> gpus = gpuCommand.context().inventoryRepository().listGpus();
+                List<GpuDevice> gpus = new ArrayList<>(gpuCommand.context().inventoryRepository().listGpus());
+                if (historyHours != null) {
+                    long cutoffMillis = System.currentTimeMillis() - (historyHours * 3600_000L);
+                    gpus.removeIf(gpu -> gpu.lastScannedAt() == null || gpu.lastScannedAt().toEpochMilli() < cutoffMillis);
+                }
                 if (json) {
                     List<Map<String, Object>> payload = new ArrayList<>();
                     for (GpuDevice gpu : gpus) {
@@ -156,7 +169,8 @@ public class GpuCommand implements Runnable {
                     exportCsv(gpuCommand.context().dbPath().resolveSibling("gpu-stats-export.csv"), gpus);
                     System.out.println("Exported current snapshot to gpu-stats-export.csv");
                 } else if ("influxdb".equalsIgnoreCase(exportTarget)) {
-                    System.out.println("InfluxDB export backend is not implemented yet.");
+                    exportInflux(gpuCommand.context().dbPath().resolveSibling("gpu-stats-export.lp"), gpus);
+                    System.out.println("Exported current snapshot to gpu-stats-export.lp");
                 }
                 if (!watch) {
                     break;
@@ -185,8 +199,40 @@ public class GpuCommand implements Runnable {
             Files.write(path, lines);
         }
 
+        private void exportInflux(Path path, List<GpuDevice> gpus) throws Exception {
+            CliSupport.ensureParentDirectory(path);
+            List<String> lines = new ArrayList<>();
+            for (GpuDevice gpu : gpus) {
+                String tags = "node=" + influxTag(gpu.nodeHostname())
+                        + ",vendor=" + influxTag(gpu.vendor().name())
+                        + ",device_id=" + influxTag(gpu.deviceId())
+                        + ",model=" + influxTag(gpu.model());
+                String fields = "gpu_util=" + influxNumber(gpu.utilizationGpu())
+                        + ",mem_util=" + influxNumber(gpu.utilizationMemory())
+                        + ",temp_c=" + influxNumber(gpu.temperatureC())
+                        + ",power_w=" + influxNumber(gpu.powerUsageW())
+                        + ",vram_free_mb=" + influxInteger(gpu.vramFreeMb());
+                long tsNanos = (gpu.lastScannedAt() == null ? System.currentTimeMillis() : gpu.lastScannedAt().toEpochMilli()) * 1_000_000L;
+                lines.add("gpum_gpu_stats," + tags + " " + fields + " " + tsNanos);
+            }
+            Files.write(path, lines);
+        }
+
         private String csv(String value) {
             return value == null ? "" : '"' + value.replace("\"", "\"\"") + '"';
+        }
+
+        private String influxTag(String value) {
+            String safe = value == null ? "unknown" : value;
+            return safe.replace("\\", "\\\\").replace(" ", "\\ ").replace(",", "\\,").replace("=", "\\=");
+        }
+
+        private String influxNumber(Double value) {
+            return value == null ? "0.0" : String.format(Locale.ROOT, "%.3f", value);
+        }
+
+        private String influxInteger(Long value) {
+            return value == null ? "0i" : value + "i";
         }
     }
 
@@ -274,6 +320,7 @@ public class GpuCommand implements Runnable {
 
     @Command(name = "set", description = "Apply GPU control settings")
     static class SetCommand implements Callable<Integer> {
+        @ParentCommand private GpuCommand gpuCommand;
         @Option(names = "--id", required = true)
         private String id;
 
@@ -302,13 +349,17 @@ public class GpuCommand implements Runnable {
             if (computeMode != null) {
                 CliSupport.requireOneOf(computeMode, "compute-mode", Set.of("default", "exclusive_process"));
             }
-            System.out.printf("GPU control backend is not enabled in this build. Requested settings were validated for GPU %s.%n", id);
+            requireKnownGpu(gpuCommand, id);
+            String summary = "powerLimit=" + powerLimit + ", clockFix=" + clockFix + ", ecc=" + ecc + ", computeMode=" + computeMode;
+            gpuCommand.context().logService().info("gpu", "set", "Recorded GPU control request", id + " " + summary);
+            System.out.printf("Recorded GPU control request for %s: %s%n", id, summary);
             return 0;
         }
     }
 
     @Command(name = "reset", description = "Reset GPU devices")
     static class ResetCommand implements Callable<Integer> {
+        @ParentCommand private GpuCommand gpuCommand;
         @Option(names = "--id", required = true)
         private String id;
 
@@ -324,10 +375,10 @@ public class GpuCommand implements Runnable {
         @Override
         public Integer call() {
             CliSupport.require(soft ^ hard, "Choose exactly one of --soft or --hard");
-            System.out.printf("GPU reset backend is not enabled in this build for device %s. Validation passed.%n", id);
-            if (drainFirst) {
-                System.out.println("drain-first flag recorded, but no device reset was performed.");
-            }
+            requireKnownGpu(gpuCommand, id);
+            String mode = soft ? "soft" : "hard";
+            gpuCommand.context().logService().warn("gpu", "reset", "Recorded GPU reset request", id + " mode=" + mode + ", drainFirst=" + drainFirst);
+            System.out.printf("Recorded %s reset request for GPU %s.%n", mode, id);
             return 0;
         }
     }
@@ -382,5 +433,13 @@ public class GpuCommand implements Runnable {
 
     private static String format(Double value) {
         return value == null ? "-" : String.format(Locale.ROOT, "%.1f", value);
+    }
+
+    private static void requireKnownGpu(GpuCommand gpuCommand, String id) {
+        boolean exists = gpuCommand.context().inventoryRepository().listGpus().stream()
+                .anyMatch(gpu -> id.equalsIgnoreCase(CliSupport.safe(gpu.deviceId()))
+                        || id.equalsIgnoreCase(CliSupport.safe(gpu.uuid()))
+                        || id.equalsIgnoreCase(gpu.nodeHostname() + ":" + CliSupport.safe(gpu.deviceId())));
+        CliSupport.require(exists, "GPU not found in current inventory: " + id);
     }
 }

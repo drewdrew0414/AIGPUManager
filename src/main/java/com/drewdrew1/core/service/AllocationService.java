@@ -10,6 +10,7 @@ import com.drewdrew1.core.model.GpuDevice;
 import com.drewdrew1.core.repository.AllocationRepository;
 import com.drewdrew1.core.repository.InventoryRepository;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayDeque;
@@ -42,27 +43,7 @@ public class AllocationService {
 
     public AllocationRecord allocate(AllocationRequest request) {
         reconcileExpiredAllocations();
-        AllocationDecision decision = plan(request, false);
-        AllocationRecord record = new AllocationRecord(
-                "alloc-" + UUID.randomUUID(),
-                request.owner(),
-                request.tenant(),
-                AllocationStatus.ACTIVE,
-                request.exclusiveNode(),
-                request.priority(),
-                request.preemptible(),
-                request.affinity(),
-                request.gpuCount(),
-                request.model(),
-                request.minVramMb(),
-                request.labelSelector(),
-                decision.primaryNodeHostname(),
-                decision.createdAt(),
-                decision.expiresAt(),
-                null,
-                decision.devices()
-        );
-        return allocationRepository.create(record);
+        return allocationRepository.create(toRecord(request, plan(request, false, null, Set.of())));
     }
 
     public List<AllocationRecord> listAllocations() {
@@ -109,7 +90,54 @@ public class AllocationService {
         return allocationRepository.markExpiredAllocations(Instant.now());
     }
 
+    public AllocationRecord moveAllocation(String id, String toNode) {
+        reconcileExpiredAllocations();
+        AllocationRecord existing = allocationRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Allocation not found: " + id));
+        if (existing.status() != AllocationStatus.ACTIVE) {
+            throw new IllegalArgumentException("Only active allocations can be moved.");
+        }
+        if (existing.devices().stream().anyMatch(device -> toNode.equalsIgnoreCase(device.nodeHostname()))) {
+            throw new IllegalArgumentException("Allocation is already placed on node: " + toNode);
+        }
+
+        AllocationRequest request = requestFromExisting(existing);
+        AllocationRecord replacement = allocationRepository.create(
+                toRecord(request, plan(request, false, Set.of(toNode), Set.of()))
+        );
+        allocationRepository.updateStatus(existing.id(), AllocationStatus.RELEASED, Instant.now());
+        return replacement;
+    }
+
+    public AllocationRecord moveAllocationAwayFromNode(String id, String sourceNode) {
+        reconcileExpiredAllocations();
+        AllocationRecord existing = allocationRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Allocation not found: " + id));
+        if (existing.status() != AllocationStatus.ACTIVE) {
+            throw new IllegalArgumentException("Only active allocations can be moved.");
+        }
+        if (existing.devices().stream().noneMatch(device -> sourceNode.equalsIgnoreCase(device.nodeHostname()))) {
+            throw new IllegalArgumentException("Allocation is not placed on node: " + sourceNode);
+        }
+
+        AllocationRequest request = requestFromExisting(existing);
+        AllocationRecord replacement = allocationRepository.create(
+                toRecord(request, plan(request, false, null, Set.of(sourceNode)))
+        );
+        allocationRepository.updateStatus(existing.id(), AllocationStatus.RELEASED, Instant.now());
+        return replacement;
+    }
+
     private AllocationDecision plan(AllocationRequest request, boolean dryRun) {
+        return plan(request, dryRun, null, Set.of());
+    }
+
+    private AllocationDecision plan(
+            AllocationRequest request,
+            boolean dryRun,
+            Set<String> allowedNodes,
+            Set<String> excludedNodes
+    ) {
         inventoryRepository.initialize();
         allocationRepository.initialize();
 
@@ -121,6 +149,12 @@ public class AllocationService {
 
         Map<String, List<GpuDevice>> eligibleByNode = new LinkedHashMap<>();
         for (GpuDevice gpu : inventory) {
+            if (allowedNodes != null && !allowedNodes.contains(gpu.nodeHostname())) {
+                continue;
+            }
+            if (excludedNodes.contains(gpu.nodeHostname())) {
+                continue;
+            }
             if (blockedNodes.contains(gpu.nodeHostname())) {
                 continue;
             }
@@ -157,6 +191,49 @@ public class AllocationService {
         String primaryNode = chosen.isEmpty() ? null : chosen.get(0).nodeHostname();
 
         return new AllocationDecision(request, chosen, primaryNode, createdAt, expiresAt, dryRun);
+    }
+
+    private AllocationRecord toRecord(AllocationRequest request, AllocationDecision decision) {
+        return new AllocationRecord(
+                "alloc-" + UUID.randomUUID(),
+                request.owner(),
+                request.tenant(),
+                AllocationStatus.ACTIVE,
+                request.exclusiveNode(),
+                request.priority(),
+                request.preemptible(),
+                request.affinity(),
+                request.gpuCount(),
+                request.model(),
+                request.minVramMb(),
+                request.labelSelector(),
+                decision.primaryNodeHostname(),
+                decision.createdAt(),
+                decision.expiresAt(),
+                null,
+                decision.devices()
+        );
+    }
+
+    private AllocationRequest requestFromExisting(AllocationRecord record) {
+        return new AllocationRequest(
+                record.owner(),
+                record.tenant(),
+                record.requestedGpuCount(),
+                record.modelFilter(),
+                record.minVramMb(),
+                record.exclusiveNode(),
+                remainingHours(record.expiresAt()),
+                record.priority(),
+                record.preemptible(),
+                record.affinity(),
+                record.labelSelector()
+        );
+    }
+
+    private int remainingHours(Instant expiresAt) {
+        long seconds = Math.max(0L, Duration.between(Instant.now(), expiresAt).getSeconds());
+        return Math.max(1, (int) Math.ceil(seconds / 3600.0));
     }
 
     private boolean matchesRequest(GpuDevice gpu, AllocationRequest request) {

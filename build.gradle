@@ -50,3 +50,37 @@ jar {
         attributes('Main-Class': 'com.drewdrew1.App')
     }
 }
+
+def generatedDistDir = layout.buildDirectory.dir('generated/gpum-dist')
+
+tasks.register('writeGpumVersionFile') {
+    def versionFile = generatedDistDir.map { it.file('gpum-version.txt').asFile }
+    outputs.file(versionFile)
+    doLast {
+        def file = versionFile.get()
+        file.parentFile.mkdirs()
+        file.text = "${project.version}\n"
+    }
+}
+
+tasks.register('gpumDist', Sync) {
+    dependsOn shadowJar
+    dependsOn tasks.named('writeGpumVersionFile')
+    into layout.buildDirectory.dir('gpum-dist')
+    from('install-gpum.sh')
+    from('gpum.cmd')
+    from('gpum.ps1')
+    from('gpum')
+    from('gpum.example.yaml')
+    from(generatedDistDir)
+    from(shadowJar.archiveFile) {
+        rename { 'gpu-mgr.jar' }
+    }
+}
+
+tasks.register('gpumDistZip', Zip) {
+    dependsOn tasks.named('gpumDist')
+    archiveFileName = "gpum-dist.zip"
+    destinationDirectory = layout.buildDirectory.dir('distributions')
+    from layout.buildDirectory.dir('gpum-dist')
+}

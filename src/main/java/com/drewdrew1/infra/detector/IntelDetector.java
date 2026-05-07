@@ -20,16 +20,18 @@ import java.util.Map;
 public class IntelDetector implements GpuDetector {
     private final CommandExecutor commandExecutor;
     private final CapabilityResolver capabilityResolver;
+    private final String xpuSmiCommand;
 
-    public IntelDetector(CommandExecutor commandExecutor, CapabilityResolver capabilityResolver) {
+    public IntelDetector(CommandExecutor commandExecutor, CapabilityResolver capabilityResolver, String xpuSmiCommand) {
         this.commandExecutor = commandExecutor;
         this.capabilityResolver = capabilityResolver;
+        this.xpuSmiCommand = xpuSmiCommand;
     }
 
     @Override
     public DetectionResult detect(String hostname, Instant scannedAt) {
         try {
-            CommandResult discovery = commandExecutor.execute(List.of("xpu-smi", "discovery", "-j"));
+            CommandResult discovery = commandExecutor.execute(List.of(xpuSmiCommand, "discovery", "-j"));
             if (!discovery.isSuccess()) {
                 return new DetectionResult(
                         GpuVendor.INTEL,
@@ -46,9 +48,9 @@ public class IntelDetector implements GpuDetector {
                 if (selector == null) {
                     continue;
                 }
-                mergeIfSuccess(merged, warnings, List.of("xpu-smi", "discovery", "-d", selector, "-j"));
-                mergeIfSuccess(merged, warnings, List.of("xpu-smi", "stats", "-d", selector, "-j"));
-                mergeIfSuccess(merged, warnings, List.of("xpu-smi", "health", "-d", selector, "-j"));
+                mergeIfSuccess(merged, warnings, List.of(xpuSmiCommand, "discovery", "-d", selector, "-j"));
+                mergeIfSuccess(merged, warnings, List.of(xpuSmiCommand, "stats", "-d", selector, "-j"));
+                mergeIfSuccess(merged, warnings, List.of(xpuSmiCommand, "health", "-d", selector, "-j"));
             }
 
             return new DetectionResult(GpuVendor.INTEL, buildDevices(hostname, scannedAt, merged), warnings);

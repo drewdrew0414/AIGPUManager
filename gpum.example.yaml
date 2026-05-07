@@ -1,0 +1,45 @@
+tools:
+  nvidiaSmi: nvidia-smi
+  amdSmi: amd-smi
+  rocmSmi: rocm-smi
+  xpuSmi: xpu-smi
+  ssh: ssh
+  kubectl: kubectl
+  mlflow: mlflow
+  bentoml: bentoml
+  powershell: powershell
+  cmd: cmd
+  bash: bash
+
+kubernetes:
+  enabled: true
+  context:
+  namespace: default
+  serviceAccount: default
+  imagePullPolicy: IfNotPresent
+
+mlflow:
+  enabled: true
+  trackingUri:
+  registryUri:
+  experiment:
+  profile:
+
+bentoml:
+  enabled: true
+  endpoint:
+  home:
+  workingDirectory:
+
+externalTools:
+  ray:
+    enabled: true
+    command: ray
+    defaultArgs:
+      - status
+  slurm:
+    enabled: true
+    command: scontrol
+    defaultArgs:
+      - show
+      - nodes

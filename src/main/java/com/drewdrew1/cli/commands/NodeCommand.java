@@ -93,6 +93,7 @@ public class NodeCommand implements Runnable {
                 nodeCommand.context().inventoryRepository()
                         .putNodeAttribute(local.node().hostname(), "scan.discovery_depth", Integer.toString(discoveryDepth));
                 nodeCommand.context().auditService().log("NODE_SCAN", actor(), local.node().hostname(), "local scan");
+                nodeCommand.context().logService().info("node", "scan", "Scanned local node", local.node().hostname());
                 scanned++;
                 for (RemoteNodeRegistration registration : nodeCommand.context().inventoryRepository().listRemoteNodes()) {
                     if (!registration.enabled()) {
@@ -105,8 +106,10 @@ public class NodeCommand implements Runnable {
                         nodeCommand.context().inventoryRepository().putNodeAttribute(remote.node().hostname(), "remote.address", registration.address());
                         nodeCommand.context().inventoryRepository().putNodeAttribute(remote.node().hostname(), "remote.user", registration.sshUser());
                         nodeCommand.context().auditService().log("NODE_SCAN", actor(), remote.node().hostname(), "remote scan from " + registration.address());
+                        nodeCommand.context().logService().info("node", "scan", "Scanned remote node", registration.address());
                         scanned++;
                     } catch (Exception e) {
+                        nodeCommand.context().logService().warn("node", "scan", "Remote scan failed", registration.address() + ": " + e.getMessage());
                         System.out.printf("Remote scan failed for %s: %s%n", registration.address(), e.getMessage());
                     }
                 }
@@ -121,6 +124,7 @@ public class NodeCommand implements Runnable {
                 nodeCommand.context().inventoryRepository().putNodeAttribute(remote.node().hostname(), "remote.address", ip);
                 nodeCommand.context().inventoryRepository().putNodeAttribute(remote.node().hostname(), "remote.user", user);
                 nodeCommand.context().auditService().log("NODE_SCAN", actor(), remote.node().hostname(), "remote scan from " + ip);
+                nodeCommand.context().logService().info("node", "scan", "Scanned remote node", ip);
                 printSummary(remote);
                 return 0;
             }
@@ -133,6 +137,7 @@ public class NodeCommand implements Runnable {
             nodeCommand.context().inventoryRepository()
                     .putNodeAttribute(summary.node().hostname(), "scan.discovery_depth", Integer.toString(discoveryDepth));
             nodeCommand.context().auditService().log("NODE_SCAN", actor(), summary.node().hostname(), "local scan");
+            nodeCommand.context().logService().info("node", "scan", "Scanned local node", summary.node().hostname());
             printSummary(summary);
             return 0;
         }
@@ -243,9 +248,9 @@ public class NodeCommand implements Runnable {
             System.out.printf("CPU cores: %d%n", info.cpuCores());
             System.out.printf("Memory MB: %d%n", info.memoryTotalMb());
             System.out.printf("Status: %s%n", resolveStatus(attrs));
-            System.out.printf("NUMA: not collected yet%n");
-            System.out.printf("RAM bandwidth: not collected yet%n");
-            System.out.printf("NIC/RDMA/InfiniBand: not collected yet%n");
+            System.out.printf("NUMA: %s%n", attrs.getOrDefault("system.numa", "unknown"));
+            System.out.printf("RAM bandwidth: %s%n", attrs.getOrDefault("system.memory_bandwidth", "unknown"));
+            System.out.printf("NIC/RDMA/InfiniBand: %s%n", attrs.getOrDefault("system.nic", "unknown"));
             System.out.printf("Driver deep analysis: partial (GPU driver version only)%n");
             System.out.printf("Last scanned: %s%n", TS_FORMATTER.format(info.lastScannedAt()));
             System.out.printf("Labels: %s%n", renderLabels(attrs));
@@ -291,7 +296,7 @@ public class NodeCommand implements Runnable {
         @Option(names = "--reason")
         private String reason = "unspecified";
 
-        @Option(names = "--evict", description = "Reserved for future job migration support")
+        @Option(names = "--evict", description = "Attempt to move active allocations away from this node")
         private boolean evict;
 
         @Override
@@ -306,7 +311,34 @@ public class NodeCommand implements Runnable {
             nodeCommand.context().auditService().log("NODE_DRAIN", actor(), host, "graceful=" + graceful + ", reason=" + reason);
             System.out.printf("Node %s marked drained.%n", host);
             if (evict) {
-                System.out.println("Eviction workflow is not implemented yet; no running allocations were moved.");
+                int moved = 0;
+                int stuck = 0;
+                List<String> failures = new ArrayList<>();
+                for (var allocation : nodeCommand.context().allocationService().listAllocations()) {
+                    if (allocation.devices().stream().noneMatch(device -> host.equalsIgnoreCase(device.nodeHostname()))) {
+                        continue;
+                    }
+                    if (allocation.status() != com.drewdrew1.core.model.AllocationStatus.ACTIVE) {
+                        continue;
+                    }
+                    try {
+                        var replacement = nodeCommand.context().allocationService().moveAllocationAwayFromNode(allocation.id(), host);
+                        nodeCommand.context().auditService().log(
+                                "NODE_EVICT_MOVE",
+                                actor(),
+                                allocation.id(),
+                                "host=" + host + ", replacement=" + replacement.id()
+                        );
+                        moved++;
+                    } catch (Exception e) {
+                        failures.add(allocation.id() + ": " + e.getMessage());
+                        stuck++;
+                    }
+                }
+                System.out.printf("Eviction summary: moved=%d, stuck=%d%n", moved, stuck);
+                for (String failure : failures) {
+                    System.out.println("- " + failure);
+                }
             }
             return 0;
         }
@@ -521,6 +553,7 @@ public class NodeCommand implements Runnable {
                 remoteCommand.nodeCommand.context().inventoryRepository()
                         .upsertRemoteNode(new RemoteNodeRegistration(ip, sshUser, alias, true, java.time.Instant.now()));
                 remoteCommand.nodeCommand.context().auditService().log("REMOTE_NODE_ADD", actor(), ip, "user=" + sshUser);
+                remoteCommand.nodeCommand.context().logService().info("node", "remote", "Registered remote node", ip);
                 System.out.printf("Registered remote node %s%n", ip);
                 return 0;
             }
@@ -569,6 +602,7 @@ public class NodeCommand implements Runnable {
                 CliSupport.requireNonBlank(ip, "ip");
                 remoteCommand.nodeCommand.context().inventoryRepository().removeRemoteNode(ip);
                 remoteCommand.nodeCommand.context().auditService().log("REMOTE_NODE_REMOVE", actor(), ip, "removed registration");
+                remoteCommand.nodeCommand.context().logService().info("node", "remote", "Removed remote node", ip);
                 System.out.printf("Removed remote node %s%n", ip);
                 return 0;
             }

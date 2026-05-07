@@ -1,13 +1,19 @@
 package com.drewdrew1.cli;
 
+import com.drewdrew1.core.config.GpumConfig;
 import com.drewdrew1.core.detector.GpuDetector;
 import com.drewdrew1.core.repository.AuditRepository;
 import com.drewdrew1.core.repository.AllocationRepository;
+import com.drewdrew1.core.repository.GovernanceRepository;
 import com.drewdrew1.core.repository.InventoryRepository;
+import com.drewdrew1.core.repository.LogRepository;
 import com.drewdrew1.core.service.AllocationService;
 import com.drewdrew1.core.service.AuditService;
 import com.drewdrew1.core.service.CapabilityResolver;
+import com.drewdrew1.core.service.GovernanceService;
+import com.drewdrew1.core.service.IntegrationService;
 import com.drewdrew1.core.service.InventoryService;
+import com.drewdrew1.core.service.LogService;
 import com.drewdrew1.core.service.NodeInfoProvider;
 import com.drewdrew1.core.service.RemoteSystemInfoService;
 import com.drewdrew1.core.service.SystemInfoService;
@@ -20,7 +26,9 @@ import com.drewdrew1.infra.executor.SshCommandExecutor;
 import com.drewdrew1.infra.output.TablePrinter;
 import com.drewdrew1.infra.persistence.SqliteAllocationRepository;
 import com.drewdrew1.infra.persistence.SqliteAuditRepository;
+import com.drewdrew1.infra.persistence.SqliteGovernanceRepository;
 import com.drewdrew1.infra.persistence.SqliteInventoryRepository;
+import com.drewdrew1.infra.persistence.SqliteLogRepository;
 
 import java.nio.file.Path;
 import java.time.Duration;
@@ -30,18 +38,25 @@ import java.util.List;
 public class AppContext {
     private final Path dbPath;
     private final Duration commandTimeout;
+    private final GpumConfig config;
     private InventoryRepository inventoryRepository;
     private AllocationRepository allocationRepository;
     private AuditRepository auditRepository;
+    private GovernanceRepository governanceRepository;
+    private LogRepository logRepository;
     private TablePrinter tablePrinter;
     private SystemInfoService systemInfoService;
     private CommandExecutor localCommandExecutor;
     private AuditService auditService;
     private AllocationService allocationService;
+    private LogService logService;
+    private IntegrationService integrationService;
+    private GovernanceService governanceService;
 
-    public AppContext(Path dbPath, Duration commandTimeout) {
+    public AppContext(Path dbPath, Duration commandTimeout, GpumConfig config) {
         this.dbPath = dbPath;
         this.commandTimeout = commandTimeout;
+        this.config = config;
     }
 
     public InventoryService inventoryService() {
@@ -51,9 +66,9 @@ public class AppContext {
     public InventoryService inventoryService(CommandExecutor executor, NodeInfoProvider nodeInfoProvider) {
         CapabilityResolver capabilityResolver = new CapabilityResolver();
         List<GpuDetector> detectors = List.of(
-                new NvidiaDetector(executor, capabilityResolver),
-                new AmdDetector(executor, capabilityResolver),
-                new IntelDetector(executor, capabilityResolver)
+                new NvidiaDetector(executor, capabilityResolver, config.getTools().getNvidiaSmi()),
+                new AmdDetector(executor, capabilityResolver, config.getTools().getAmdSmi(), config.getTools().getRocmSmi()),
+                new IntelDetector(executor, capabilityResolver, config.getTools().getXpuSmi())
         );
         InventoryRepository repository = new SqliteInventoryRepository(dbPath);
         return new InventoryService(repository, detectors, nodeInfoProvider);
@@ -101,6 +116,27 @@ public class AppContext {
         return auditService;
     }
 
+    public GovernanceRepository governanceRepository() {
+        if (governanceRepository == null) {
+            governanceRepository = new SqliteGovernanceRepository(dbPath);
+        }
+        return governanceRepository;
+    }
+
+    public LogRepository logRepository() {
+        if (logRepository == null) {
+            logRepository = new SqliteLogRepository(dbPath);
+        }
+        return logRepository;
+    }
+
+    public LogService logService() {
+        if (logService == null) {
+            logService = new LogService(logRepository());
+        }
+        return logService;
+    }
+
     public SystemInfoService systemInfoService() {
         if (systemInfoService == null) {
             systemInfoService = new SystemInfoService();
@@ -116,7 +152,7 @@ public class AppContext {
     }
 
     public CommandExecutor sshCommandExecutor(String address, String sshUser) {
-        return new SshCommandExecutor(commandTimeout, address, sshUser);
+        return new SshCommandExecutor(commandTimeout, address, sshUser, config.getTools().getSsh());
     }
 
     public InventoryService remoteInventoryService(String address, String sshUser) {
@@ -130,5 +166,23 @@ public class AppContext {
 
     public Duration commandTimeout() {
         return commandTimeout;
+    }
+
+    public GpumConfig config() {
+        return config;
+    }
+
+    public IntegrationService integrationService() {
+        if (integrationService == null) {
+            integrationService = new IntegrationService(commandExecutor(), config);
+        }
+        return integrationService;
+    }
+
+    public GovernanceService governanceService() {
+        if (governanceService == null) {
+            governanceService = new GovernanceService(governanceRepository(), inventoryRepository(), allocationRepository());
+        }
+        return governanceService;
     }
 }

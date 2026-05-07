@@ -1,1018 +1,642 @@
-# GPUManager
-
-AI 학습용 GPU 서버 자원을 할당하고 관리하는 Java 21 기반 CLI JAR 프로젝트.
-
-이 프로젝트의 목표는 단순한 `nvidia-smi` 래퍼가 아니라, 여러 서버에 걸쳐 존재하는 GPU/CPU/RAM/스토리지 자원을 탐지하고, 정책에 따라 안전하게 예약/할당/회수하는 운영 도구를 만드는 것이다. 기본 배포 형태는 `gpu-mgr.jar`이며, 우선순위는 Linux GPU 서버 운영 환경이다.
-
-## 1. 프로젝트 목표
-
-- NVIDIA와 AMD GPU를 모두 지원하는 통합 자원 관리 도구
-- 단일 서버가 아니라 여러 GPU 서버를 하나의 자원 풀처럼 관리
-- 연구원/팀/프로젝트 단위의 할당 정책, 쿼터, 예약, 대기열 지원
-- 학습 작업 실행 전후의 자원 점유 상태를 추적하고 감사 로그를 남김
-- CLI 우선 설계, 필요 시 REST API/웹 UI는 이후 확장
-
-## 2. 반드시 지원해야 하는 하드웨어 범위
-
-### NVIDIA
-
-- 데이터센터 계열: `V100`, `A100`, `H100`, `H200`, `B200`, `L4`, `L40`, `L40S`
-- 워크스테이션/RTX 계열: `RTX Axxxx`, `RTX 20/30/40/50 시리즈`
-- 기능 차이 고려:
-  - MIG 지원 GPU와 비지원 GPU 구분
-  - CUDA 가능 여부
-  - NVLink/NVSwitch 토폴로지
-  - ECC 지원 여부
-  - 전력 제한/클럭/온도 상태 조회
-
-### AMD
-
-- Instinct 계열: `MI100`, `MI200`, `MI210`, `MI250`, `MI300` 시리즈
-- Radeon Pro / ROCm 호환 가능 계열
-- 기능 차이 고려:
-  - ROCm 가능 여부
-  - XGMI/Infinity Fabric 연결 정보
-  - VRAM/ECC/전력/온도 상태 조회
-  - 일부 모델에서 관리 명령 범위가 제한될 수 있음
-
-### Intel (추후 지원 대상)
-
-- 데이터센터/AI 계열: `Intel Data Center GPU Max` 시리즈
-- 워크스테이션/일반 계열: `Intel Arc Pro`, `Intel Arc`
-- 추후 고려 기능:
-  - oneAPI / Level Zero 지원 여부
-  - XPU 계열 디바이스 식별
-  - VRAM / 온도 / 전력 / utilization 조회
-  - 드라이버 및 런타임 호환성 확인
-
-### 설계 원칙
-
-- 특정 모델 이름으로 분기하지 말고 `vendor + family + capabilities` 기반으로 추상화
-- 같은 벤더 안에서도 모델마다 기능 차이가 크므로 `기능 탐지(capability discovery)`를 먼저 수행
-- 지원 여부는 "이름 매칭"이 아니라 "실행 가능한 관리 기능 집합"으로 판정
-- 향후 Intel을 추가할 수 있도록 벤더 종속 로직은 detector/capability 계층에 격리
-
-## 3. 우선 지원 OS / 런타임
-
-- 1차 운영 대상: `Ubuntu` / `RHEL 계열` Linux 서버
-- 제어 노드 CLI는 Windows/macOS에서도 동작 가능하게 설계 가능
-- JDK 21
-- Gradle build
-- 서버 측 필수 툴:
-  - NVIDIA: `nvidia-smi`
-  - AMD: `rocm-smi` 또는 `amd-smi`
-- 선택 통합:
-  - Docker / Podman
-  - Slurm
-  - Kubernetes
-  - SSH 기반 원격 실행
-
-## 4. 이 프로젝트에서 만들어야 하는 핵심 기능
-
-### 4.1 서버 및 GPU 인벤토리 수집
-
-- 등록된 서버 목록 관리
-- 서버별 하드웨어 스캔
-  - hostname
-  - CPU 코어
-  - 시스템 메모리
-  - 로컬 스토리지
-  - NIC / IB 정보
-  - GPU 개수
-  - GPU별 UUID / PCI Bus ID / 모델 / VRAM / 드라이버 / 상태
-- 정기적인 하트비트와 상태 갱신
-- 서버 장애/오프라인 상태 감지
-
-### 4.2 GPU 추상화 계층
-
-GPU를 아래 공통 모델로 표현해야 한다.
-
-- `vendor`: NVIDIA / AMD
-- `model`
-- `deviceId`
-- `uuid`
-- `vramTotalMb`
-- `vramFreeMb`
-- `utilizationGpu`
-- `utilizationMemory`
-- `temperatureC`
-- `powerUsageW`
-- `powerLimitW`
-- `eccEnabled`
-- `interconnectType`
-- `healthState`
-- `supportsMig`
-- `supportsPartitioning`
-- `supportsCompute`
-- `supportsContainerRuntime`
-
-벤더별 구현은 다르더라도 상위 계층에서는 동일한 인터페이스로 다뤄야 한다.
-
-### 4.3 자원 할당 단위 정의
-
-최소한 아래 단위를 지원해야 한다.
-
-- 서버 단위 할당
-- GPU 개수 단위 할당
-- 특정 GPU 지정 할당
-- VRAM 최소치 기반 할당
-- MIG/파티션 단위 할당
-- CPU/RAM/스토리지 동반 예약
-- 기간 기반 lease 할당
-
-예시:
-
-- `H100 2장 이상`
-- `B200 8장 + NVLink 선호`
-- `RTX 계열 1장 + VRAM 20GB 이상`
-- `AMD MI300 계열 4장`
-- `CUDA 필수`
-- `ROCm 필수`
-
-### 4.4 스케줄링 / 정책 엔진
-
-반드시 정의해야 할 정책:
-
-- 즉시 할당
-- 대기열 등록
-- 우선순위 기반 스케줄링
-- 팀/사용자 쿼터
-- 공정 점유(fair-share)
-- 최대 점유 시간
-- 예약 종료 후 자동 회수
-- idle timeout 기반 회수
-- 선점 가능 작업과 비선점 작업 구분
-
-추천 스케줄링 전략:
-
-- 1순위: 기능 충족 여부
-- 2순위: fragmentation 최소화
-- 3순위: 같은 노드 집적 배치
-- 4순위: 인터커넥트 품질 우선
-- 5순위: 팀별 공정성
-
-### 4.5 예약 / 점유 / 회수 라이프사이클
-
-- `REQUESTED`
-- `QUEUED`
-- `ALLOCATED`
-- `RUNNING`
-- `RELEASING`
-- `RELEASED`
-- `EXPIRED`
-- `FAILED`
-- `PREEMPTED`
-
-필수 동작:
-
-- 예약 생성
-- 예약 승인/거절
-- 점유 시작
-- 점유 연장
-- 점유 종료
-- 강제 회수
-- 만료 자동 정리
-- 장애 발생 시 orphan allocation 복구
-
-### 4.6 작업 실행 연동
-
-최소 범위에서는 실제 학습 프레임워크를 직접 실행하지 않아도 되지만, 아래 훅은 필요하다.
-
-- 할당 전 검증 훅
-- 할당 후 실행 훅
-- 종료 후 정리 훅
-- 실패 시 롤백 훅
-
-예시 연동 대상:
-
-- Python training script
-- Docker container
-- SSH remote command
-- Slurm submit wrapper
-
-### 4.7 상태 조회 및 운영자 기능
-
-- 현재 사용 가능 GPU 조회
-- 사용자별/팀별 점유 현황 조회
-- 모델별 재고 조회
-- 서버별 장애 상태 조회
-- 장기 점유 작업 조회
-- idle GPU 조회
-- 할당 이력 조회
-- 강제 해제
-- 노드 drain / undrain
-- 유지보수 모드 전환
-
-### 4.8 감사 로그 / 이력 관리
-
-반드시 남겨야 하는 로그:
-
-- 누가
-- 언제
-- 어떤 자원을
-- 어떤 조건으로 요청했는지
-- 실제 어떤 서버/디바이스에 배정되었는지
-- 언제 반환되었는지
-- 누가 강제 종료했는지
-
-로그 종류:
-
-- audit log
-- scheduler decision log
-- health check log
-- allocation event log
-
-## 5. 비기능 요구사항
-
-### 안정성
-
-- 중복 할당 금지
-- 프로세스 재시작 후 상태 복구 가능
-- 부분 장애 상황에서도 메타데이터 일관성 유지
-- 실패한 외부 명령 실행에 대한 timeout / retry / backoff
-
-### 확장성
-
-- 수십 대 서버 / 수백 장 GPU까지 감당 가능한 구조
-- 벤더별 구현체 추가가 쉬운 구조
-- 향후 REST API / Web UI / Kubernetes operator 확장 가능
-
-### 보안
-
-- 관리자 명령과 일반 사용자 명령 분리
-- 최소 권한 원칙
-- 원격 실행 시 SSH 키 관리
-- 민감 정보 마스킹
-- 감사 가능한 관리자 액션
-
-### 운영성
-
-- 텍스트 표 출력
-- JSON/YAML 출력 지원
-- verbose / debug 로그 레벨 분리
-- 상태 점검 명령 제공
-
-## 6. 추천 아키텍처
-
-현재 의존성을 기준으로 다음 구조가 적절하다.
-
-```text
-src/main/java/com/drewdrew1
-  App.java
-  cli/
-    GpuMgrCommand.java
-    commands/
-  core/
-    model/
-    service/
-    scheduler/
-    policy/
-  infra/
-    detector/
-      nvidia/
-      amd/
-    executor/
-    persistence/
-    config/
-  api/
-```
-
-### 레이어별 책임
-
-- `cli`
-  - picocli 기반 명령 파싱
-  - 표/JSON 출력
-- `core.model`
-  - Node, GpuDevice, Allocation, Lease, UserQuota 같은 도메인 객체
-- `core.service`
-  - 인벤토리 수집, 할당, 회수, 조회 서비스
-- `core.scheduler`
-  - 후보 노드 계산, 정책 적용, 우선순위 평가
-- `core.policy`
-  - quota, reservation, fairness, preemption 규칙
-- `infra.detector`
-  - `nvidia-smi`, `rocm-smi`, `amd-smi` 호출 및 파싱
-- `infra.executor`
-  - 로컬/SSH/컨테이너 명령 실행
-- `infra.persistence`
-  - SQLite 저장소
-- `infra.config`
-  - YAML 설정 로드
-
-## 7. 꼭 분리해서 설계해야 하는 인터페이스
-
-### `GpuDetector`
-
-- 서버에서 GPU 목록과 상태를 읽어옴
-- NVIDIA/AMD 구현 분리
-
-### `HealthCollector`
-
-- 온도, utilization, 메모리, 전력, ECC, 장애 상태 수집
-
-### `Scheduler`
-
-- 요청 조건을 만족하는 후보 자원을 계산
-
-### `AllocationRepository`
-
-- 할당 상태 영속화
-
-### `CommandExecutor`
-
-- 로컬 명령 / SSH 명령 실행 추상화
-
-### `CapabilityResolver`
-
-- 장치가 CUDA/ROCm/oneAPI/MIG/partitioning/NVLink/XGMI를 지원하는지 판단
-
-## 8. 저장해야 하는 도메인 엔티티
-
-- `Node`
-- `GpuDevice`
-- `GpuPartition`
-- `InventorySnapshot`
-- `AllocationRequest`
-- `Allocation`
-- `Lease`
-- `Tenant`
-- `User`
-- `QuotaPolicy`
-- `ReservationPolicy`
-- `HealthEvent`
-- `AuditEvent`
-
-## 9. SQLite 스키마 초안
-
-최소 테이블:
-
-- `nodes`
-- `gpus`
-- `gpu_partitions`
-- `allocation_requests`
-- `allocations`
-- `leases`
-- `tenants`
-- `users`
-- `quota_policies`
-- `audit_events`
-- `health_events`
-
-최소 제약:
-
-- 동일 GPU/파티션에 대해 활성 할당 중복 금지
-- 만료되지 않은 lease 중복 금지
-- node/gpu UUID unique
-
-## 10. CLI에서 제공해야 하는 명령
-
-예시:
-
-```bash
-java -jar gpu-mgr.jar node scan
-java -jar gpu-mgr.jar node list
-java -jar gpu-mgr.jar gpu list
-java -jar gpu-mgr.jar gpu stats
-java -jar gpu-mgr.jar alloc request --vendor nvidia --model H100 --gpus 2
-java -jar gpu-mgr.jar alloc request --vendor amd --family MI300 --gpus 4
-java -jar gpu-mgr.jar alloc request --vendor nvidia --min-vram 20480 --gpus 1
-java -jar gpu-mgr.jar alloc approve <requestId>
-java -jar gpu-mgr.jar alloc release <allocationId>
-java -jar gpu-mgr.jar alloc extend <allocationId> --hours 12
-java -jar gpu-mgr.jar queue list
-java -jar gpu-mgr.jar quota list
-java -jar gpu-mgr.jar audit list
-```
-
-최소 명령 그룹:
-
-- `node`
-- `gpu`
-- `alloc`
+# gpum
+
+GPU inventory, allocation, audit, logging, and integration CLI for AI training infrastructure.
+
+> [ NOTICE ]
+> `gpum` is designed to work without expensive GPU hardware during development. The project includes detector parsing tests, fixture-based fleet tests, and CLI integration tests so most behavior can be validated on a normal machine.
+
+> [ WARNING ]
+> Some command groups are production-ready enough for local inventory, SQLite-backed metadata, logs, and basic allocation workflows. Other groups are still contract-first placeholders and are clearly marked below.
+
+> [ TIP ]
+> On Windows, use `gpum.cmd`. On PowerShell, `.\gpum.ps1` also works. On Unix-like systems, use `./gpum`.
+
+## Table of Contents
+
+- [English](#english)
+  - [Overview](#overview)
+  - [Status](#status)
+  - [Features](#features)
+  - [Supported GPU Families](#supported-gpu-families)
+  - [Architecture](#architecture)
+  - [Build and Launch](#build-and-launch)
+  - [Windows Support](#windows-support)
+  - [Configuration](#configuration)
+  - [SQLite, Audit, and Logs](#sqlite-audit-and-logs)
+  - [Command Reference](#command-reference)
+  - [Integrations](#integrations)
+  - [Testing Without GPUs](#testing-without-gpus)
+  - [Known Limits](#known-limits)
+- [한국어](#한국어)
+  - [개요](#개요)
+  - [상태](#상태)
+  - [기능](#기능)
+  - [지원 GPU 계열](#지원-gpu-계열)
+  - [구조](#구조)
+  - [빌드 및 실행](#빌드-및-실행)
+  - [Windows 지원](#windows-지원)
+  - [설정](#설정)
+  - [SQLite, Audit, Log](#sqlite-audit-log)
+  - [명령어 레퍼런스](#명령어-레퍼런스)
+  - [연동](#연동)
+  - [실장비 없이 테스트](#실장비-없이-테스트)
+  - [현재 한계](#현재-한계)
+
+---
+
+## English
+
+### Overview
+
+`gpum` manages GPU servers for AI training and inference workloads. It normalizes NVIDIA, AMD, and Intel hardware into one inventory model, persists metadata in SQLite, exposes allocation and audit flows through a CLI, and now includes configurable integrations for Kubernetes, MLflow, BentoML, and custom external tools.
+
+### Status
+
+Implemented and working:
+
+- Multi-vendor inventory detection for NVIDIA, AMD, and Intel
+- Local and remote node scanning
+- SQLite-backed inventory, allocations, audit events, and operational logs
+- Basic allocation lifecycle: request, dry-run, list, info, extend, release, reap
+- Windows-friendly local command execution fallback
+- `gpum` launcher scripts: `gpum.cmd`, `gpum.ps1`, `gpum`
+- Configurable tool paths and integration defaults through YAML
+- Filterable and sortable `audit` and `log` queries
+- Integration command surface for Kubernetes, MLflow, BentoML, and custom tools
+
+Implemented as command contract / partial backend:
+
+- `node drain --evict`
+- `gpu set`
+- `gpu reset`
+- `part`
 - `queue`
 - `quota`
-- `tenant`
-- `audit`
-- `config`
-- `health`
+- `report`
 
-## 11. 설정 파일에서 다뤄야 하는 항목
+### Features
 
-`config.yaml` 예시:
+- Unified GPU model across vendors
+- Node inventory snapshots
+- GPU topology and capability tracking
+- Lease-based allocations
+- Immutable audit trail
+- Mutable operational logs with search and sort
+- Remote SSH scans
+- YAML-driven external tool configuration
+- Windows, Linux, and macOS launch entrypoints
 
-```yaml
-server:
-  pollIntervalSec: 30
-  leaseReconcileIntervalSec: 15
+### Supported GPU Families
 
-inventory:
-  enableNvidia: true
-  enableAmd: true
-  commandTimeoutSec: 10
+Representative coverage exists for:
 
-remote:
-  mode: ssh
-  sshUser: gpuadmin
-  sshPort: 22
+- NVIDIA: `H100`, `H200`, `B200`, `A100`, `RTX 4090`, `RTX 6000 Ada`, `L40S`
+- AMD: `MI210`, `MI250X`, `MI300X`, `Radeon PRO W7900`
+- Intel: `Data Center GPU Max 1100`, `Max 1550`, `Arc Pro A60`, `Flex 170`
 
-scheduler:
-  strategy: balanced
-  allowMixedVendors: false
-  preferSameNode: true
-  preferHighBandwidthInterconnect: true
-  idleReleaseMinutes: 30
+The detector architecture is not hardcoded to only these SKUs. New models are expected to flow through the same normalized `GpuDevice` model as long as their vendor tools expose compatible fields.
 
-policies:
-  defaultMaxLeaseHours: 24
-  allowPreemption: false
+### Architecture
 
-storage:
-  sqlitePath: ./data/gpu-mgr.db
-```
+- `cli`
+  - Picocli command entrypoints
+- `core`
+  - domain models, services, repositories, config
+- `infra/detector`
+  - vendor-specific hardware parsing
+- `infra/persistence`
+  - SQLite repositories
+- `infra/executor`
+  - local and SSH command execution
 
-## 12. 벤더별 명령 처리 전략
+### Build and Launch
 
-### NVIDIA
-
-최소 수집 대상:
-
-- `nvidia-smi --query-gpu=... --format=csv,noheader,nounits`
-- GPU UUID
-- 모델명
-- 메모리 총량/사용량
-- GPU 사용률
-- 온도
-- 전력 사용량
-- 드라이버 버전
-- MIG 모드
-
-### AMD
-
-최소 수집 대상:
-
-- `rocm-smi` 또는 `amd-smi`
-- GPU UUID 또는 식별 가능한 디바이스 키
-- 모델명
-- VRAM 총량/사용량
-- GPU 사용률
-- 온도
-- 전력
-- ROCm 가능 여부
-
-### 구현상 주의
-
-- 쉘 출력 파싱은 취약하므로 가능한 한 구조화된 출력 옵션을 우선 사용
-- 벤더 명령 실패를 전체 시스템 실패로 확대하지 말고, 노드별 degraded 상태로 처리
-- 드라이버/툴 버전별 출력 포맷 차이를 감안해 파서 테스트를 분리
-
-## 13. MVP에서 꼭 끝내야 하는 범위
-
-### Phase 1
-
-- 단일 노드 스캔
-- NVIDIA/AMD 공통 GPU 모델 추상화
-- SQLite 저장
-- CLI 조회
-- 기본 할당/회수
-- lease 만료 처리
-
-### Phase 2
-
-- 멀티 노드 지원
-- 원격 SSH 수집
-- 대기열
-- 쿼터 정책
-- 감사 로그
-
-### Phase 3
-
-- MIG/파티션 지원
-- 선점 정책
-- Slurm/Kubernetes 연동
-- REST API
-
-## 14. 구현 우선순위
-
-1. 공통 도메인 모델 정의
-2. YAML 설정 로더 작성
-3. SQLite repository 작성
-4. NVIDIA detector 작성
-5. AMD detector 작성
-6. 인벤토리 스캔 명령 작성
-7. 할당 서비스와 스케줄러 작성
-8. lease 만료/회수 처리 작성
-9. 운영 조회 명령 작성
-10. 감사 로그와 테스트 보강
-
-## 15. 테스트 전략
-
-반드시 있어야 하는 테스트:
-
-- NVIDIA CLI 출력 파서 테스트
-- AMD CLI 출력 파서 테스트
-- 스케줄러 후보 선택 테스트
-- 중복 할당 방지 테스트
-- lease 만료 테스트
-- quota 위반 테스트
-- 노드 장애 복구 테스트
-
-테스트 종류:
-
-- 단위 테스트
-- 저장소 테스트(SQLite)
-- 통합 테스트(샘플 명령 출력 기반)
-- 회귀 테스트(실제 장비가 없어도 샘플 출력으로 검증)
-
-## 16. 완료 기준
-
-아래를 만족하면 1차 버전으로 볼 수 있다.
-
-- NVIDIA와 AMD 장비를 모두 스캔할 수 있음
-- GPU 모델/VRAM/상태를 공통 포맷으로 조회할 수 있음
-- 요청 조건에 맞는 GPU를 배정할 수 있음
-- 중복 할당이 발생하지 않음
-- 점유 만료와 회수가 동작함
-- SQLite에 이력과 상태가 남음
-- CLI만으로 운영자가 실사용 가능한 수준의 조회/제어가 가능함
-
-## 17. 현재 프로젝트 기준 바로 만들 파일들
-
-- `src/main/java/com/drewdrew1/App.java`
-- `src/main/java/com/drewdrew1/cli/GpuMgrCommand.java`
-- `src/main/java/com/drewdrew1/cli/commands/*`
-- `src/main/java/com/drewdrew1/core/model/*`
-- `src/main/java/com/drewdrew1/core/service/*`
-- `src/main/java/com/drewdrew1/core/scheduler/*`
-- `src/main/java/com/drewdrew1/core/policy/*`
-- `src/main/java/com/drewdrew1/infra/detector/nvidia/*`
-- `src/main/java/com/drewdrew1/infra/detector/amd/*`
-- `src/main/java/com/drewdrew1/infra/executor/*`
-- `src/main/java/com/drewdrew1/infra/persistence/*`
-- `src/main/java/com/drewdrew1/infra/config/*`
-- `src/test/java/com/drewdrew1/...`
-
-## 18. 빌드/실행 목표
-
-빌드 결과물:
+Build:
 
 ```bash
 ./gradlew shadowJar
 ```
 
-산출물:
-
-- `build/libs/gpu-mgr.jar`
-
-최종적으로는 아래 형태로 실행되는 것이 목표다.
+Run directly:
 
 ```bash
-java -jar build/libs/gpu-mgr.jar gpu list
-java -jar build/libs/gpu-mgr.jar alloc request --vendor nvidia --model H100 --gpus 2
+java -jar build/libs/gpu-mgr.jar --help
 ```
 
-## 19. 권장 개발 원칙
+Run with launcher:
 
-- 벤더별 구현을 서비스 로직과 분리
-- 문자열 파싱 로직을 테스트 가능하게 작은 단위로 분리
-- 상태 조회와 자원 변경 명령을 구분
-- "GPU 이름"보다 "기능(capability)"을 기준으로 스케줄링
-- 나중에 REST API를 얹을 수 있게 core 계층을 CLI와 분리
+```bash
+gpum --help
+```
 
-## 20. 다음 구현 순서 제안
+Windows:
 
-가장 현실적인 시작 순서는 아래다.
+```powershell
+.\gpum.cmd --help
+.\gpum.ps1 --help
+```
 
-1. `config.yaml` 로더
-2. `node scan`, `gpu list` CLI
-3. NVIDIA detector
-4. AMD detector
-5. SQLite inventory 저장
-6. `alloc request`, `alloc release`
-7. lease 만료 처리
-8. audit/health 로그
+Unix-like:
 
-이 README는 소개 문서라기보다 구현 명세 초안에 가깝다. 먼저 MVP 범위를 Phase 1으로 고정한 뒤, 그 다음에 detector와 allocation 흐름부터 코드로 만드는 것이 맞다.
+```bash
+./gpum --help
+```
 
-## 21. 실제 작업 순서
+### Windows Support
 
-아래 순서대로 작업하면 된다. 앞 단계를 끝내기 전에는 뒤 단계로 넘어가지 않는 편이 좋다.
+`gpum` now includes Windows-specific improvements:
 
-### Step 1. 프로젝트 뼈대 정리
+- launcher scripts for `cmd.exe` and PowerShell
+- fallback executable probing for `.exe`, `.cmd`, `.bat`, `.com`
+- configurable tool paths for `nvidia-smi`, `amd-smi`, `rocm-smi`, `xpu-smi`, `kubectl`, `mlflow`, `bentoml`, `ssh`
 
-- `cli`, `core`, `infra` 패키지 생성
-- `App.java`에서 picocli 엔트리포인트 연결
-- 공통 예외 타입, 공통 응답 포맷, 출력 유틸 정의
+This means a Windows host can scan local inventory, query SQLite, inspect logs, and run CLI integrations without requiring a Unix shell.
 
-완료 기준:
+### Configuration
 
-- `java -jar ... --help` 수준의 기본 CLI가 뜰 것
+Use `--config` with a YAML file:
 
-### Step 2. 설정 로딩
+```bash
+gpum --config gpum.example.yaml system config
+```
 
-- `config.yaml` 스키마 정의
-- Jackson YAML 로더 작성
-- 기본값 처리와 유효성 검사 추가
+Example file: [gpum.example.yaml](C:/Users/love7/Pictures/GPUManager/gpum.example.yaml:1)
 
-완료 기준:
+Supported config areas:
 
-- 설정 파일 없이도 기본값으로 실행 가능
-- 설정 파일이 있으면 정상 로딩 가능
+- `tools`
+  - tool executable names or absolute paths
+- `kubernetes`
+  - default context, namespace, service account, image pull policy
+- `mlflow`
+  - tracking URI, registry URI, experiment, profile
+- `bentoml`
+  - endpoint, home, working directory
+- `externalTools`
+  - arbitrary custom commands with default arguments
 
-### Step 3. 도메인 모델 정의
+Show defaults:
 
-- `Node`
-- `GpuDevice`
-- `GpuPartition`
-- `AllocationRequest`
-- `Allocation`
-- `Lease`
-- `Tenant`
-- `QuotaPolicy`
+```bash
+gpum system config --show-defaults
+```
 
-완료 기준:
+### SQLite, Audit, and Logs
 
-- 벤더와 무관하게 GPU를 표현할 수 있어야 함
+SQLite is the default metadata store and works out of the box at:
 
-### Step 4. 저장소 계층 작성
+```text
+data/gpu-mgr.db
+```
 
-- SQLite 연결 관리
-- 테이블 생성 로직
-- `nodes`, `gpus`, `allocations`, `leases`, `audit_events` 저장소 작성
+Stored entities include:
 
-완료 기준:
+- nodes
+- GPUs
+- node attributes / labels
+- remote node registrations
+- allocations and GPU claims
+- audit events
+- operational log entries
 
-- 스캔 결과와 할당 상태를 DB에 저장/조회 가능
+Audit commands:
 
-### Step 5. 명령 실행 추상화
+```bash
+gpum audit list --event ALLOC_CREATE --sort desc --tail 20
+gpum audit list --user alice --target alloc-123 --contains release
+gpum audit trace alloc-123
+```
 
-- 로컬 명령 실행기 작성
-- timeout / stderr / exit code 처리
-- 이후 SSH 실행기를 붙일 수 있도록 인터페이스 분리
+Log commands:
 
-완료 기준:
+```bash
+gpum log write --level info --component system --category startup --message "gpum booted"
+gpum log list --component alloc --contains created --sort desc --limit 50
+gpum log tail --lines 20
+```
 
-- 외부 명령 실행 결과를 안정적으로 수집 가능
+### Command Reference
 
-### Step 6. NVIDIA detector 구현
+#### `node`
 
-- `nvidia-smi` 기반 GPU 탐지
-- 공통 `GpuDevice` 변환
-- 샘플 출력 기반 파서 테스트 작성
-
-완료 기준:
-
-- H100, B200, RTX 계열이 공통 포맷으로 조회 가능
-
-### Step 7. AMD detector 구현
-
-- `rocm-smi` 또는 `amd-smi` 기반 GPU 탐지
-- 공통 `GpuDevice` 변환
-- 샘플 출력 기반 파서 테스트 작성
-
-완료 기준:
-
-- MI 시리즈와 ROCm 가능 장비가 공통 포맷으로 조회 가능
-
-### Step 8. 인벤토리 스캔 흐름 완성
-
-- `node scan`
-- `node list`
-- `gpu list`
-- `gpu stats`
-
-완료 기준:
-
-- 등록된 노드의 최신 GPU 상태를 조회 가능
-
-### Step 9. 기본 할당 엔진 구현
-
-- 요청 조건 파싱
-- 후보 GPU 탐색
-- 중복 할당 방지
-- `ALLOCATED` 상태 저장
-
-완료 기준:
-
-- `alloc request`와 `alloc release`가 동작
-
-### Step 10. lease / 만료 / 회수
-
-- lease 시작/종료 시각 관리
-- 만료 스캐너
-- 자동 회수
-- orphan allocation 정리
-
-완료 기준:
-
-- 만료된 점유가 자동으로 정리됨
-
-### Step 11. 정책 계층 추가
-
-- quota
-- fair-share
-- 우선순위
-- idle timeout
-
-완료 기준:
-
-- 사용자/팀 정책을 적용한 할당이 가능
-
-### Step 12. 감사 및 운영 기능
-
-- `audit list`
-- 강제 해제
-- drain / undrain
-- health event 기록
-
-완료 기준:
-
-- 운영자가 CLI만으로 상태 확인과 강제 제어 가능
-
-### Step 13. 멀티 노드 / 원격 수집
-
-- SSH executor
-- 원격 노드 스캔
-- 멀티 노드 스케줄링
-
-완료 기준:
-
-- 여러 GPU 서버를 하나의 풀처럼 관리 가능
-
-### Step 14. 파티셔닝/MIG 지원
-
-- MIG 인식
-- 파티션 단위 할당
-- fragmentation 최소화 로직
-
-완료 기준:
-
-- H100/A100 계열 파티션 자원도 관리 가능
-
-### Step 15. 추후 Intel GPU 지원
-
-Intel은 지금 바로 1차 구현 대상은 아니지만, 아래 순서로 붙일 수 있게 설계해야 한다.
-
-1. `GpuVendor`에 `INTEL` 추가
-2. `IntelDetector` 인터페이스/구현 추가
-3. `CapabilityResolver`에 `oneAPI`, `Level Zero` 항목 추가
-4. Intel CLI 출력 샘플 기반 파서 테스트 추가
-5. 스케줄러에 `vendor=intel` 및 capability 필터 연결
-6. 문서와 설정 파일에 Intel 옵션 추가
-
-완료 기준:
-
-- 기존 `core` 계층 변경을 최소화하면서 Intel detector만 추가해도 동작해야 함
-
-### 추천 마일스톤
-
-- Milestone 1: `Step 1` ~ `Step 5`
-- Milestone 2: `Step 6` ~ `Step 8`
-- Milestone 3: `Step 9` ~ `Step 10`
-- Milestone 4: `Step 11` ~ `Step 13`
-- Milestone 5: `Step 14` ~ `Step 15`
-
-## 22. Current Implementation Status
-
-As of 2026-05-07, the project has a working CLI surface, inventory detection engine, SQLite persistence, and basic operational metadata management. The command name is now `gpum`.
-
-### Implemented and working
-
-- CLI entrypoint:
-  - `gpum`
-- Hardware detection:
-  - NVIDIA via `nvidia-smi`
-  - AMD via `amd-smi` with `rocm-smi` fallback
-  - Intel via `xpu-smi`
-- Common GPU inventory model:
-  - vendor / model / uuid / PCI / VRAM / util / temp / power / ECC / interconnect
-- Capability resolution:
-  - NVIDIA MIG detection
-  - NVLink detection
-  - AMD XGMI detection
-  - Intel Xe Link style capability detection
-- Persistence:
-  - SQLite schema for nodes
-  - SQLite schema for GPUs
-  - SQLite schema for node attributes / labels / maintenance / drain state
-- Node commands with working backend:
-  - `gpum node scan`
-  - `gpum node list`
-  - `gpum node info`
-  - `gpum node drain`
-  - `gpum node undrain`
-  - `gpum node top`
-  - `gpum node maintenance`
-  - `gpum node label`
-- GPU commands with working backend:
-  - `gpum gpu list`
-  - `gpum gpu stats`
-  - `gpum gpu health`
-  - `gpum gpu topology`
-- System commands with working backend:
-  - `gpum system config`
-  - `gpum system db-check`
-  - `gpum system health`
-  - `gpum system backup`
-  - `gpum system restore`
-- Safety / exception prevention:
-  - shared CLI validation
-  - range checks
-  - required argument checks
-  - mutually exclusive option checks
-  - safe error handler for command failures
-  - detector failure isolation per vendor
-
-### Implemented as CLI contract only
-
-The commands below exist, their options are validated, and they fail safely, but the business backend is not implemented yet.
-
-- `gpum alloc *`
-- `gpum part *`
-- `gpum queue *`
-- `gpum quota *`
-- `gpum audit *`
-- `gpum report *`
-- `gpum gpu set`
-- `gpum gpu reset`
+- `gpum node scan`
+- `gpum node scan --all`
+- `gpum node scan --ip <addr> --ssh-user <user>`
+- `gpum node list`
+- `gpum node info <host>`
+- `gpum node top --metric <power|temp|util>`
+- `gpum node drain <host>`
+- `gpum node undrain <host>`
+- `gpum node maintenance <host> --on|--off`
+- `gpum node label <host> --set key=value`
+- `gpum node remote add|list|remove`
+
+#### `gpu`
+
+- `gpum gpu list`
+- `gpum gpu stats`
+- `gpum gpu health`
+- `gpum gpu topology`
+- `gpum gpu set` (validation path implemented, hardware control backend pending)
+- `gpum gpu reset` (validation path implemented, hardware reset backend pending)
+
+#### `alloc`
+
+- `gpum alloc request`
+- `gpum alloc request --dry-run`
+- `gpum alloc list`
+- `gpum alloc info --id <id>`
+- `gpum alloc extend --id <id> --hours <n>`
+- `gpum alloc release --id <id>`
+- `gpum alloc reap`
+- `gpum alloc move` (placeholder)
+
+#### `audit`
+
+- `gpum audit list`
+- `gpum audit trace <id>`
+
+#### `log`
+
+- `gpum log write`
+- `gpum log list`
+- `gpum log tail`
+
+#### `integration`
+
+- `gpum integration k8s contexts`
+- `gpum integration k8s pods`
+- `gpum integration k8s submit`
+- `gpum integration k8s logs`
+- `gpum integration mlflow status`
+- `gpum integration mlflow runs`
+- `gpum integration mlflow models`
+- `gpum integration bentoml list`
+- `gpum integration bentoml models`
+- `gpum integration bentoml serve`
+- `gpum integration tool --name <custom-tool>`
+
+#### `system`
+
+- `gpum system config`
+- `gpum system db-check`
+- `gpum system health`
+- `gpum system backup`
+- `gpum system restore`
 - `gpum system update`
 
-### Not implemented yet
+#### Contract-first placeholders
 
-- real allocation scheduler
-- allocation persistence and lifecycle state machine
-- queue promotion / demotion backend
-- quota engine
-- audit event store
-- usage / billing reports
-- MIG partition creation / destroy / optimization backend
-- live allocation migration
-- process discovery / kill tree handling
-- remote SSH node scan
-- multi-node cluster scan
-- NUMA inspection
-- RAM bandwidth measurement
-- NIC / RDMA / InfiniBand deep inspection
-- PCIe generation detection
-- historical GPU metrics storage
-- InfluxDB export backend
-- GPU power / clock / ECC / compute-mode write control backend
+- `part`
+- `queue`
+- `quota`
+- `report`
 
-## 23. Next Implementation Order
+### Integrations
 
-Recommended next order from here:
+#### Kubernetes
 
-1. allocation domain model + SQLite tables
-2. `alloc request/list/info/release/extend`
-3. queue and quota engine
-4. audit event logging
-5. GPU control backend (`gpu set`, `gpu reset`)
-6. MIG / partition backend
-7. remote SSH scanning and multi-node discovery
-8. report and billing backend
+Kubernetes support is CLI-driven through configured `kubectl`.
 
-## 24. Reality Check
+Use cases:
 
-Right now this project is not yet a complete GPU resource manager. It is a solid inventory and control-plane foundation with a broad CLI contract already in place. The highest-value next milestone is to make `alloc` real before expanding more operational surface area.
+- inspect contexts
+- inspect pods
+- generate a simple GPU job manifest
+- stream pod logs
 
-## 25. Advanced Architecture Expansion
+#### MLflow
 
-Below is the expanded target architecture for the next stages of the project.
+MLflow support is CLI-driven through configured `mlflow`.
 
-### 25.1 Infrastructure & Detection
+Use cases:
 
-- Multi-Vendor Detector
-  - `nvidia-smi`, `rocm-smi`, `intel-gputop` / `xpu-smi` execution and parsing
-  - topology map generation for PCIe / NVLink / P2P / switch domains
-- Remote Node Agent
-  - SSH-based remote execution
-  - optional lightweight agent mode
-  - hybrid agentless + agent mode
-- Health Checker
-  - temperature / fan / power / ECC monitoring
-  - degraded state transition on thermal throttling or health faults
+- inspect effective tracking configuration
+- list runs
+- list registered models
 
-### 25.2 Scheduling & Allocation
+#### BentoML
 
-- Intelligent Scheduler
-  - affinity-aware placement
-  - same-node / same-fabric / same-NVLink-domain placement
-  - fragmentation-aware bin-packing
-- Lease & Reaper Service
-  - TTL-based allocation expiry
-  - automatic reclaim
-  - pre-expiry notification and extension workflow
-- Transaction Manager
-  - concurrent request control
-  - duplicate allocation prevention
-  - DB transaction / locking strategy
-- MIG / Partition Manager
-  - physical GPU slicing
-  - partition profile inventory
-  - profile lifecycle management
+BentoML support is CLI-driven through configured `bentoml`.
 
-### 25.3 Governance & Policy
+Use cases:
 
-- Multi-tenant Quota
-  - per-user / per-tenant GPU limits
-  - VRAM totals
-  - GPU-hours limits
-  - hard / soft quota separation
-- Priority Queue
-  - weighted queueing
-  - aging to prevent starvation
-- Preemption Engine
-  - low-priority reclaim
-  - checkpoint / resume aware eviction
+- list Bentos
+- list BentoML models
+- start a local service
 
-### 25.4 Data & Analytics
+#### Custom tools
 
-- Persistence Layer
-  - SQLite for local mode
-  - PostgreSQL for multi-node / production mode
-- Audit Logger
-  - immutable lifecycle event trail
-- Usage Reporter
-  - utilization reports
-  - cost reports
-  - anomaly detection for abnormal power / usage patterns
+`externalTools` in YAML lets you wire additional platforms without changing code. Examples:
 
-### 25.5 Advanced Operations
+- Ray
+- Slurm
+- Airflow
+- internal deployment wrappers
+- cluster-specific utilities
 
-- Process Cleaner
-  - process tree cleanup on release
-  - zombie process cleanup
-- Node Maintenance Workflow
-  - `Drain -> Evict -> Check -> Undrain`
-- CLI UX Enhancements
-  - tab completion
-  - aliases
-  - JSON / YAML / table output modes
-- REST API Bridge
-  - CLI-backed HTTP service mode
+### Testing Without GPUs
 
-## 26. Additional Advanced Features
+The project already supports hardware-free validation:
 
-Beyond the current roadmap, these are worth adding as expert-level features.
+- detector output fixture tests
+- mixed-vendor fleet fixture tests
+- CLI command matrix tests
+- SQLite integration tests
 
-### 26.1 Placement Explainability
+Run:
 
-- scheduler decision trace for every allocation
-- why a node was selected or rejected
-- dry-run output with ranked candidates
+```bash
+./gradlew test
+```
 
-### 26.2 Cost-Aware Scheduling
+### Known Limits
 
-- power-aware placement
-- premium vs low-cost pool selection
-- vendor/model-based internal billing classes
+> [!WARNING]
+> The following areas are not fully implemented yet:
 
-### 26.3 Predictive Operations
+- live GPU power / clock mutation
+- true GPU reset and process cleanup
+- full MIG lifecycle control
+- queue scheduling backend
+- quota enforcement backend
+- billing / report generation backend
+- real Kubernetes job mutation with resource patching
 
-- predictive maintenance from ECC / thermal / power drift
-- early warning for likely hardware degradation
-- capacity forecast for future queue pressure
+---
 
-### 26.4 Observability
+## 한국어
 
-- Prometheus metrics
-- OpenTelemetry tracing
-- webhook/event streaming for allocation lifecycle
+### 개요
 
-### 26.5 Security & Access Control
+`gpum`은 AI 학습/추론용 GPU 서버를 대상으로 인벤토리 수집, 자원 할당, 감사 이력, 운영 로그, 외부 플랫폼 연동을 제공하는 CLI입니다. NVIDIA, AMD, Intel 장비를 하나의 공통 모델로 정규화하고, SQLite에 메타데이터를 저장합니다.
 
-- RBAC for operator vs tenant vs user
-- API token / SSO bridge
-- tenant-level policy isolation
-- audited admin overrides
+### 상태
 
-### 26.6 Data Pipeline / Training Integration
+실제로 동작하는 범위:
 
-- Slurm bridge
-- Kubernetes device plugin integration layer
-- container launch templates
-- training job metadata hooks
+- NVIDIA / AMD / Intel 인벤토리 탐지
+- 로컬 / 원격 노드 스캔
+- SQLite 기반 인벤토리 / allocation / audit / log 저장
+- 기본 allocation 라이프사이클
+- Windows 실행 경로와 `gpum` 런처
+- YAML 설정
+- 정렬 / 필터가 가능한 audit / log 조회
+- Kubernetes / MLflow / BentoML / custom tool 연동 명령 표면
 
-## 27. Expanded Roadmap
+계약은 있지만 백엔드가 제한적인 범위:
 
-1. Phase 1 (MVP)
-   - single node scan
-   - `gpu list`
-   - manual allocation / release
-2. Phase 2 (Management)
-   - DB persistence
-   - multi-node SSH scan
-   - lease expiry / reaper
-3. Phase 3 (Enterprise)
-   - quota
-   - priority queue
-   - audit / reporting
-4. Phase 4 (Expert)
-   - MIG partitioning
-   - preemption
-   - process cleanup
-   - monitoring / dashboard
-5. Phase 5 (Platform)
-   - REST API bridge
-   - PostgreSQL mode
-   - observability stack
-   - predictive operations
+- `node drain --evict`
+- `gpu set`
+- `gpu reset`
+- `part`
+- `queue`
+- `quota`
+- `report`
+
+### 기능
+
+- 멀티벤더 GPU 공통 추상화
+- 노드/장치 인벤토리 수집
+- GPU capability / topology 표시
+- lease 기반 allocation
+- immutable audit trail
+- 검색 가능한 operational log
+- SSH 원격 스캔
+- 외부 도구 경로 / 기본값 YAML 설정
+
+### 지원 GPU 계열
+
+대표 테스트 커버리지:
+
+- NVIDIA: `H100`, `H200`, `B200`, `A100`, `RTX 4090`, `RTX 6000 Ada`, `L40S`
+- AMD: `MI210`, `MI250X`, `MI300X`, `Radeon PRO W7900`
+- Intel: `Data Center GPU Max 1100`, `Max 1550`, `Arc Pro A60`, `Flex 170`
+
+### 구조
+
+- `cli`
+  - 사용자 명령 진입점
+- `core`
+  - 도메인 모델, 서비스, 설정
+- `infra/detector`
+  - 벤더별 하드웨어 파서
+- `infra/persistence`
+  - SQLite 저장소
+- `infra/executor`
+  - 로컬 / SSH 명령 실행
+
+### 빌드 및 실행
+
+빌드:
+
+```bash
+./gradlew shadowJar
+```
+
+직접 실행:
+
+```bash
+java -jar build/libs/gpu-mgr.jar --help
+```
+
+런처 사용:
+
+```bash
+gpum --help
+```
+
+Windows:
+
+```powershell
+.\gpum.cmd --help
+.\gpum.ps1 --help
+```
+
+### Windows 지원
+
+Windows 확장 내용:
+
+- `gpum.cmd`, `gpum.ps1`
+- `.exe`, `.cmd`, `.bat`, `.com` 실행 fallback
+- GPU vendor / kubectl / mlflow / bentoml / ssh 경로를 YAML로 교체 가능
+
+### 설정
+
+YAML 설정 파일 예시는 [gpum.example.yaml](C:/Users/love7/Pictures/GPUManager/gpum.example.yaml:1) 에 있습니다.
+
+사용 예:
+
+```bash
+gpum --config gpum.example.yaml system config
+```
+
+설정 범위:
+
+- `tools`
+- `kubernetes`
+- `mlflow`
+- `bentoml`
+- `externalTools`
+
+기본값 보기:
+
+```bash
+gpum system config --show-defaults
+```
+
+### SQLite, Audit, Log
+
+기본 DB:
+
+```text
+data/gpu-mgr.db
+```
+
+저장되는 주요 데이터:
+
+- 노드
+- GPU
+- 라벨 / 속성
+- 원격 노드 등록
+- allocation / claim
+- audit event
+- operational log
+
+Audit 예:
+
+```bash
+gpum audit list --event ALLOC_CREATE --sort desc --tail 20
+gpum audit trace alloc-123
+```
+
+Log 예:
+
+```bash
+gpum log write --level info --component system --category startup --message "gpum booted"
+gpum log list --component alloc --contains created --sort desc --limit 50
+gpum log tail --lines 20
+```
+
+### 명령어 레퍼런스
+
+#### `node`
+
+- `gpum node scan`
+- `gpum node scan --all`
+- `gpum node scan --ip <addr> --ssh-user <user>`
+- `gpum node list`
+- `gpum node info <host>`
+- `gpum node top`
+- `gpum node drain`
+- `gpum node undrain`
+- `gpum node maintenance`
+- `gpum node label`
+- `gpum node remote add|list|remove`
+
+#### `gpu`
+
+- `gpum gpu list`
+- `gpum gpu stats`
+- `gpum gpu health`
+- `gpum gpu topology`
+- `gpum gpu set`
+- `gpum gpu reset`
+
+#### `alloc`
+
+- `gpum alloc request`
+- `gpum alloc request --dry-run`
+- `gpum alloc list`
+- `gpum alloc info`
+- `gpum alloc extend`
+- `gpum alloc release`
+- `gpum alloc reap`
+- `gpum alloc move`
+
+#### `audit`
+
+- `gpum audit list`
+- `gpum audit trace`
+
+#### `log`
+
+- `gpum log write`
+- `gpum log list`
+- `gpum log tail`
+
+#### `integration`
+
+- `gpum integration k8s contexts|pods|submit|logs`
+- `gpum integration mlflow status|runs|models`
+- `gpum integration bentoml list|models|serve`
+- `gpum integration tool --name <custom>`
+
+#### `system`
+
+- `gpum system config`
+- `gpum system db-check`
+- `gpum system health`
+- `gpum system backup`
+- `gpum system restore`
+- `gpum system update`
+
+#### 플레이스홀더
+
+- `part`
+- `queue`
+- `quota`
+- `report`
+
+### 연동
+
+#### Kubernetes
+
+- context 조회
+- pod 조회
+- 간단한 GPU job manifest 생성
+- pod log 조회
+
+#### MLflow
+
+- tracking 설정 확인
+- run 조회
+- model 조회
+
+#### BentoML
+
+- Bento 목록 조회
+- model 목록 조회
+- serve 실행
+
+#### 기타 도구
+
+`externalTools`를 통해 Ray, Slurm, 사내 wrapper 등도 연결할 수 있습니다.
+
+### 실장비 없이 테스트
+
+가능한 검증 방식:
+
+- detector fixture test
+- mixed fleet fixture test
+- CLI integration test
+- SQLite integration test
+
+실행:
+
+```bash
+./gradlew test
+```
+
+### 현재 한계
+
+> [!WARNING]
+> 아직 완전하지 않은 부분:
+
+- 실제 GPU power / clock 제어
+- 진짜 GPU reset / process cleaner
+- 완전한 MIG lifecycle
+- queue backend
+- quota enforcement
+- billing / report backend
+- 실제 Kubernetes 리소스 patching 기반 배포 자동화

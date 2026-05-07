@@ -3,6 +3,7 @@ package com.drewdrew1.cli.commands;
 import com.drewdrew1.cli.CliSupport;
 import com.drewdrew1.cli.GpuMgrCommand;
 import com.drewdrew1.core.model.AuditEvent;
+import com.drewdrew1.core.model.AuditQuery;
 import com.github.freva.asciitable.AsciiTable;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -16,6 +17,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Callable;
 
 /** Exposes audit listing and lifecycle trace commands. */
@@ -43,28 +45,29 @@ public class AuditCommand implements Runnable {
 
         @Option(names = "--event") private String event;
         @Option(names = "--user") private String user;
+        @Option(names = "--target") private String target;
+        @Option(names = "--contains") private String contains;
         @Option(names = "--from") private String from;
         @Option(names = "--to") private String to;
         @Option(names = "--tail") private Integer tail;
+        @Option(names = "--sort", defaultValue = "desc") private String sort;
         @Override public Integer call() {
-            List<AuditEvent> events;
-            if (from != null || to != null) {
-                Instant fromTs = from == null ? Instant.EPOCH : CliSupport.parseInstant(from, "from");
-                Instant toTs = to == null ? Instant.now().plusSeconds(315360000L) : CliSupport.parseInstant(to, "to");
-                events = new ArrayList<>(auditCommand.parent.createContext().auditService().listBetween(fromTs, toTs));
-            } else {
-                events = new ArrayList<>(auditCommand.parent.createContext().auditService().list());
+            CliSupport.requireOneOf(sort, "sort", Set.of("asc", "desc"));
+            if (tail != null) {
+                CliSupport.requirePositive(tail, "tail");
             }
-            if (tail != null) CliSupport.requirePositive(tail, "tail");
-            if (event != null) {
-                events.removeIf(e -> !e.eventType().equalsIgnoreCase(event));
-            }
-            if (user != null) {
-                events.removeIf(e -> !e.actor().equalsIgnoreCase(user));
-            }
-            if (tail != null && events.size() > tail) {
-                events = new ArrayList<>(events.subList(0, tail));
-            }
+            Instant fromTs = from == null ? null : CliSupport.parseInstant(from, "from");
+            Instant toTs = to == null ? null : CliSupport.parseInstant(to, "to");
+            List<AuditEvent> events = new ArrayList<>(auditCommand.parent.createContext().auditService().query(new AuditQuery(
+                    blankToNull(event),
+                    blankToNull(user),
+                    blankToNull(target),
+                    blankToNull(contains),
+                    fromTs,
+                    toTs,
+                    "asc".equalsIgnoreCase(sort),
+                    tail
+            )));
             if (events.isEmpty()) {
                 System.out.println("No audit events found.");
                 return 0;
@@ -117,5 +120,9 @@ public class AuditCommand implements Runnable {
             ));
             return 0;
         }
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 }

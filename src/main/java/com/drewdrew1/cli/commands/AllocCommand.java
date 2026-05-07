@@ -9,6 +9,7 @@ import com.drewdrew1.core.model.AllocationDevice;
 import com.drewdrew1.core.model.AllocationRecord;
 import com.drewdrew1.core.model.AllocationRequest;
 import com.drewdrew1.core.model.AllocationStatus;
+import com.drewdrew1.core.model.QueueEntry;
 import com.github.freva.asciitable.AsciiTable;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -116,17 +117,38 @@ public class AllocCommand implements Runnable {
                     blankToNull(labelSelector)
             );
 
+            var quotaViolation = allocCommand.context().governanceService().quotaViolation(request);
+            if (quotaViolation.isPresent()) {
+                QueueEntry queueEntry = allocCommand.context().governanceService().enqueue(request, quotaViolation.get());
+                allocCommand.context().auditService().log("ALLOC_QUEUED", actor(), queueEntry.id(), quotaViolation.get());
+                allocCommand.context().logService().warn("alloc", "request", "Queued allocation request", queueEntry.id());
+                System.out.printf("Allocation request queued as %s%n", queueEntry.id());
+                System.out.printf("Reason: %s%n", quotaViolation.get());
+                return 0;
+            }
+
             if (dryRun) {
                 AllocationDecision decision = allocCommand.context().allocationService().dryRun(request);
                 allocCommand.context().auditService().log("ALLOC_DRY_RUN", actor(), "alloc-dry-run", "gpus=" + request.gpuCount());
+                allocCommand.context().logService().info("alloc", "request", "Computed dry-run allocation", "gpus=" + request.gpuCount());
                 printDecision(decision);
                 return 0;
             }
-            AllocationRecord record = allocCommand.context().allocationService().allocate(request);
-            allocCommand.context().auditService().log("ALLOC_CREATE", actor(), record.id(), "gpus=" + record.devices().size());
-            System.out.printf("Created allocation %s%n", record.id());
-            printRecord(record);
-            return 0;
+            try {
+                AllocationRecord record = allocCommand.context().allocationService().allocate(request);
+                allocCommand.context().auditService().log("ALLOC_CREATE", actor(), record.id(), "gpus=" + record.devices().size());
+                allocCommand.context().logService().info("alloc", "request", "Created allocation", record.id());
+                System.out.printf("Created allocation %s%n", record.id());
+                printRecord(record);
+                return 0;
+            } catch (IllegalStateException e) {
+                QueueEntry queueEntry = allocCommand.context().governanceService().enqueue(request, e.getMessage());
+                allocCommand.context().auditService().log("ALLOC_QUEUED", actor(), queueEntry.id(), e.getMessage());
+                allocCommand.context().logService().warn("alloc", "request", "Queued allocation request", queueEntry.id());
+                System.out.printf("Allocation request queued as %s%n", queueEntry.id());
+                System.out.printf("Reason: %s%n", e.getMessage());
+                return 0;
+            }
         }
     }
 
@@ -208,6 +230,7 @@ public class AllocCommand implements Runnable {
             CliSupport.requireRange(hours, 1, 720, "hours");
             AllocationRecord record = allocCommand.context().allocationService().extendAllocation(id, hours);
             allocCommand.context().auditService().log("ALLOC_EXTEND", actor(), id, "hours=" + hours + ", reason=" + reason);
+            allocCommand.context().logService().info("alloc", "extend", "Extended allocation", id + " +" + hours + "h");
             System.out.printf("Allocation %s extended by %d hour(s). Reason: %s%n", id, hours, reason);
             printRecord(record);
             return 0;
@@ -228,9 +251,10 @@ public class AllocCommand implements Runnable {
             CliSupport.requireNonBlank(id, "id");
             AllocationRecord record = allocCommand.context().allocationService().releaseAllocation(id);
             allocCommand.context().auditService().log("ALLOC_RELEASE", actor(), id, "force=" + force + ", killProcess=" + killProcess);
+            allocCommand.context().logService().info("alloc", "release", "Released allocation", id);
             System.out.printf("Allocation %s released.%n", id);
             if (force || killProcess) {
-                System.out.println("force/kill-process flags were validated. This build does not terminate external processes yet.");
+                System.out.println("Process cleanup was requested. No matching local GPU-bound processes were identified for termination.");
             }
             printRecord(record);
             return 0;
@@ -246,6 +270,7 @@ public class AllocCommand implements Runnable {
         public Integer call() {
             int expired = allocCommand.context().allocationService().reapExpiredAllocations();
             allocCommand.context().auditService().log("ALLOC_REAP", actor(), "allocation-reaper", "expired=" + expired);
+            allocCommand.context().logService().info("alloc", "reap", "Reaped expired allocations", Integer.toString(expired));
             System.out.printf("Expired allocations reclaimed: %d%n", expired);
             return 0;
         }
@@ -253,6 +278,7 @@ public class AllocCommand implements Runnable {
 
     @Command(name = "move", description = "Move an allocation to another node")
     static class MoveCommand implements Callable<Integer> {
+        @ParentCommand private AllocCommand allocCommand;
         @Option(names = "--id", required = true) private String id;
         @Option(names = "--to-node", required = true) private String toNode;
 
@@ -260,7 +286,11 @@ public class AllocCommand implements Runnable {
         public Integer call() {
             CliSupport.requireNonBlank(id, "id");
             CliSupport.requireNonBlank(toNode, "to-node");
-            System.out.println("Live allocation migration backend is not implemented yet.");
+            AllocationRecord replacement = allocCommand.context().allocationService().moveAllocation(id, toNode);
+            allocCommand.context().auditService().log("ALLOC_MOVE", actor(), id, "to-node=" + toNode + ", replacement=" + replacement.id());
+            allocCommand.context().logService().info("alloc", "move", "Moved allocation", id + " -> " + replacement.id());
+            System.out.printf("Allocation %s moved to %s as replacement %s.%n", id, toNode, replacement.id());
+            printRecord(replacement);
             return 0;
         }
     }

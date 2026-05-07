@@ -9,18 +9,20 @@ public class SshCommandExecutor implements CommandExecutor {
     private final LocalCommandExecutor localExecutor;
     private final String address;
     private final String sshUser;
+    private final String sshCommand;
 
-    public SshCommandExecutor(Duration timeout, String address, String sshUser) {
+    public SshCommandExecutor(Duration timeout, String address, String sshUser, String sshCommand) {
         this.localExecutor = new LocalCommandExecutor(timeout);
         this.address = address;
         this.sshUser = sshUser;
+        this.sshCommand = sshCommand;
     }
 
     @Override
     public CommandResult execute(List<String> command) {
         String remoteCommand = quoteCommand(command);
         List<String> ssh = new ArrayList<>();
-        ssh.add("ssh");
+        ssh.add(sshCommand);
         ssh.add("-o");
         ssh.add("BatchMode=yes");
         ssh.add("-o");

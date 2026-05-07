@@ -38,17 +38,19 @@ public class NvidiaDetector implements GpuDetector {
 
     private final CommandExecutor commandExecutor;
     private final CapabilityResolver capabilityResolver;
+    private final String nvidiaSmiCommand;
 
-    public NvidiaDetector(CommandExecutor commandExecutor, CapabilityResolver capabilityResolver) {
+    public NvidiaDetector(CommandExecutor commandExecutor, CapabilityResolver capabilityResolver, String nvidiaSmiCommand) {
         this.commandExecutor = commandExecutor;
         this.capabilityResolver = capabilityResolver;
+        this.nvidiaSmiCommand = nvidiaSmiCommand;
     }
 
     @Override
     public DetectionResult detect(String hostname, Instant scannedAt) {
         try {
             CommandResult queryResult = commandExecutor.execute(List.of(
-                    "nvidia-smi",
+                    nvidiaSmiCommand,
                     "--query-gpu=" + QUERY_FIELDS,
                     "--format=csv,noheader,nounits"
             ));
@@ -62,7 +64,7 @@ public class NvidiaDetector implements GpuDetector {
 
             String topologyMatrix = "";
             try {
-                CommandResult topoResult = commandExecutor.execute(List.of("nvidia-smi", "topo", "-m"));
+                CommandResult topoResult = commandExecutor.execute(List.of(nvidiaSmiCommand, "topo", "-m"));
                 if (topoResult.isSuccess()) {
                     topologyMatrix = topoResult.stdout();
                 }

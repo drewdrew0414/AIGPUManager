@@ -1,6 +1,7 @@
 package com.drewdrew1.core.service;
 
 import com.drewdrew1.core.model.AuditEvent;
+import com.drewdrew1.core.model.AuditQuery;
 import com.drewdrew1.core.repository.AuditRepository;
 
 import java.time.Instant;
@@ -32,5 +33,10 @@ public class AuditService {
     public List<AuditEvent> listBetween(Instant from, Instant to) {
         auditRepository.initialize();
         return auditRepository.listBetween(from, to);
+    }
+
+    public List<AuditEvent> query(AuditQuery query) {
+        auditRepository.initialize();
+        return auditRepository.query(query);
     }
 }

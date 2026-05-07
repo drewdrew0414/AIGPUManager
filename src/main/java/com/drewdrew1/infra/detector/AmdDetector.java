@@ -21,10 +21,19 @@ import java.util.Map;
 public class AmdDetector implements GpuDetector {
     private final CommandExecutor commandExecutor;
     private final CapabilityResolver capabilityResolver;
+    private final String amdSmiCommand;
+    private final String rocmSmiCommand;
 
-    public AmdDetector(CommandExecutor commandExecutor, CapabilityResolver capabilityResolver) {
+    public AmdDetector(
+            CommandExecutor commandExecutor,
+            CapabilityResolver capabilityResolver,
+            String amdSmiCommand,
+            String rocmSmiCommand
+    ) {
         this.commandExecutor = commandExecutor;
         this.capabilityResolver = capabilityResolver;
+        this.amdSmiCommand = amdSmiCommand;
+        this.rocmSmiCommand = rocmSmiCommand;
     }
 
     @Override
@@ -44,10 +53,10 @@ public class AmdDetector implements GpuDetector {
 
     private boolean runAmdSmiCommands(Map<String, Map<String, String>> merged, List<String> warnings) {
         List<List<String>> commands = List.of(
-                List.of("amd-smi", "list", "--json"),
-                List.of("amd-smi", "static", "--json"),
-                List.of("amd-smi", "metric", "--json"),
-                List.of("amd-smi", "xgmi", "--json")
+                List.of(amdSmiCommand, "list", "--json"),
+                List.of(amdSmiCommand, "static", "--json"),
+                List.of(amdSmiCommand, "metric", "--json"),
+                List.of(amdSmiCommand, "xgmi", "--json")
         );
 
         boolean anySuccess = false;
@@ -71,7 +80,7 @@ public class AmdDetector implements GpuDetector {
     private void runRocmSmiFallback(Map<String, Map<String, String>> merged, List<String> warnings) {
         try {
             CommandResult result = commandExecutor.execute(List.of(
-                    "rocm-smi",
+                    rocmSmiCommand,
                     "--showproductname",
                     "--showuniqueid",
                     "--showbus",

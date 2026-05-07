@@ -99,7 +99,13 @@ public class CapabilityResolver {
                     continue;
                 }
                 String value = entry.getValue().toLowerCase(Locale.ROOT);
-                if (value.isBlank() || "n/a".equals(value) || "0".equals(value) || "none".equals(value)) {
+                if (value.isBlank()
+                        || "n/a".equals(value)
+                        || "0".equals(value)
+                        || "none".equals(value)
+                        || "disabled".equals(value)
+                        || "false".equals(value)
+                        || "off".equals(value)) {
                     continue;
                 }
                 return true;

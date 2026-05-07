@@ -1,8 +1,12 @@
 package com.drewdrew1.cli;
 
+import com.drewdrew1.core.config.ConfigLoader;
+import com.drewdrew1.core.config.GpumConfig;
 import com.drewdrew1.cli.commands.AllocCommand;
 import com.drewdrew1.cli.commands.AuditCommand;
 import com.drewdrew1.cli.commands.GpuCommand;
+import com.drewdrew1.cli.commands.IntegrationCommand;
+import com.drewdrew1.cli.commands.LogCommand;
 import com.drewdrew1.cli.commands.NodeCommand;
 import com.drewdrew1.cli.commands.PartCommand;
 import com.drewdrew1.cli.commands.QueueCommand;
@@ -31,6 +35,8 @@ import java.time.Duration;
                 QueueCommand.class,
                 QuotaCommand.class,
                 AuditCommand.class,
+                LogCommand.class,
+                IntegrationCommand.class,
                 ReportCommand.class,
                 SystemCommand.class
         }
@@ -50,6 +56,12 @@ public class GpuMgrCommand implements Runnable {
     )
     private int commandTimeoutSec;
 
+    @Option(
+            names = "--config",
+            description = "Optional YAML config path"
+    )
+    private Path configPath;
+
     @Spec
     private CommandSpec spec;
 
@@ -58,7 +70,8 @@ public class GpuMgrCommand implements Runnable {
     public AppContext createContext() {
         if (appContext == null) {
             CliSupport.requireRange(commandTimeoutSec, 1, 300, "command timeout seconds");
-            appContext = new AppContext(dbPath, Duration.ofSeconds(commandTimeoutSec));
+            GpumConfig config = ConfigLoader.load(configPath);
+            appContext = new AppContext(dbPath, Duration.ofSeconds(commandTimeoutSec), config);
         }
         return appContext;
     }
@@ -66,5 +79,9 @@ public class GpuMgrCommand implements Runnable {
     @Override
     public void run() {
         spec.commandLine().usage(System.out);
+    }
+
+    public Path configuredConfigPath() {
+        return configPath;
     }
 }

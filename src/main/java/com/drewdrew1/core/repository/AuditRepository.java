@@ -1,6 +1,7 @@
 package com.drewdrew1.core.repository;
 
 import com.drewdrew1.core.model.AuditEvent;
+import com.drewdrew1.core.model.AuditQuery;
 
 import java.time.Instant;
 import java.util.List;
@@ -16,4 +17,6 @@ public interface AuditRepository {
     List<AuditEvent> traceByTarget(String target);
 
     List<AuditEvent> listBetween(Instant from, Instant to);
+
+    List<AuditEvent> query(AuditQuery query);
 }
