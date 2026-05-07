@@ -183,16 +183,16 @@ gpum alloc list
 Remote node registration:
 
 ```bash
-gpum node remote add --ip 10.0.0.20 --ssh-user gpuadmin --alias trainer-a
+gpum node remote add --ip <remote-ip> --ssh-user <ssh-user> --alias <node-alias>
 gpum node remote list
-gpum node scan --ip 10.0.0.20 --ssh-user gpuadmin
+gpum node scan --ip <remote-ip> --ssh-user <ssh-user>
 ```
 
-Windows examples using actual values:
+Windows examples:
 
 ```bat
-gpum node info BOOK-BPLP86MA55
-gpum node scan --ip 10.0.0.20 --ssh-user gpuadmin
+gpum node info <host>
+gpum node scan --ip <remote-ip> --ssh-user <ssh-user>
 gpum node remote list
 ```
 
@@ -203,19 +203,19 @@ gpum node remote list
 
 - `gpum node scan`
 - `gpum node scan --all`
-- `gpum node scan --ip 10.0.0.20 --ssh-user gpuadmin`
+- `gpum node scan --ip <remote-ip> --ssh-user <ssh-user>`
 - `gpum node list`
 - `gpum node info`
-- `gpum node info BOOK-BPLP86MA55`
+- `gpum node info <host>`
 - `gpum node top --metric util`
 - `gpum node drain`
 - `gpum node undrain`
 - `gpum node maintenance --on --reason patching`
 - `gpum node label --show`
 - `gpum node label --set role=trainer,zone=lab`
-- `gpum node remote add --ip 10.0.0.20 --ssh-user gpuadmin`
+- `gpum node remote add --ip <remote-ip> --ssh-user <ssh-user>`
 - `gpum node remote list`
-- `gpum node remote remove --ip 10.0.0.20`
+- `gpum node remote remove --ip <remote-ip>`
 
 `node drain`, `node undrain`, `node maintenance`, and `node label` now default to the local host if `HOST` is omitted.
 
@@ -244,7 +244,7 @@ gpum node remote list
 
 #### `part`
 
-- `gpum part create --gpu nvidia-h-pool:0 --profile 1g.10gb --count 1`
+- `gpum part create --gpu <node>:<gpu-id> --profile <profile> --count 1`
 - `gpum part list`
 - `gpum part destroy --id <partition-id>`
 - `gpum part auto-optimize`
@@ -257,9 +257,9 @@ gpum node remote list
 
 #### `quota`
 
-- `gpum quota set --name alice --max-gpus 4 --max-vram 320000 --max-lease-hours 72`
-- `gpum quota status --user alice --remaining`
-- `gpum quota alert --name alice --threshold 80,90`
+- `gpum quota set --name <user-or-tenant> --max-gpus 4 --max-vram 320000 --max-lease-hours 72`
+- `gpum quota status --user <user> --remaining`
+- `gpum quota alert --name <user-or-tenant> --threshold 80,90`
 
 #### `audit`
 
@@ -275,7 +275,7 @@ gpum node remote list
 #### `report`
 
 - `gpum report usage --format json --by model`
-- `gpum report billing --rate-card rate-card.yaml`
+- `gpum report billing --rate-card <rate-card-file>`
 
 #### `integration`
 
@@ -292,8 +292,8 @@ gpum node remote list
 - `gpum system config --edit`
 - `gpum system db-check --repair --vacuum --orphan-clean`
 - `gpum system health`
-- `gpum system backup --path backup.db`
-- `gpum system restore --path backup.db`
+- `gpum system backup --path <backup-file>`
+- `gpum system restore --path <backup-file>`
 - `gpum system update`
 
 <a id="en-supported-gpu-families"></a>
@@ -535,16 +535,16 @@ gpum alloc list
 원격 노드 등록:
 
 ```bash
-gpum node remote add --ip 10.0.0.20 --ssh-user gpuadmin --alias trainer-a
+gpum node remote add --ip <remote-ip> --ssh-user <ssh-user> --alias <node-alias>
 gpum node remote list
-gpum node scan --ip 10.0.0.20 --ssh-user gpuadmin
+gpum node scan --ip <remote-ip> --ssh-user <ssh-user>
 ```
 
 Windows에서 실제 입력 예시:
 
 ```bat
-gpum node info BOOK-BPLP86MA55
-gpum node scan --ip 10.0.0.20 --ssh-user gpuadmin
+gpum node info <host>
+gpum node scan --ip <remote-ip> --ssh-user <ssh-user>
 gpum node remote list
 ```
 
@@ -557,19 +557,19 @@ gpum node remote list
 
 - `gpum node scan`
 - `gpum node scan --all`
-- `gpum node scan --ip 10.0.0.20 --ssh-user gpuadmin`
+- `gpum node scan --ip <remote-ip> --ssh-user <ssh-user>`
 - `gpum node list`
 - `gpum node info`
-- `gpum node info BOOK-BPLP86MA55`
+- `gpum node info <host>`
 - `gpum node top --metric util`
 - `gpum node drain`
 - `gpum node undrain`
 - `gpum node maintenance --on --reason patching`
 - `gpum node label --show`
 - `gpum node label --set role=trainer,zone=lab`
-- `gpum node remote add --ip 10.0.0.20 --ssh-user gpuadmin`
+- `gpum node remote add --ip <remote-ip> --ssh-user <ssh-user>`
 - `gpum node remote list`
-- `gpum node remote remove --ip 10.0.0.20`
+- `gpum node remote remove --ip <remote-ip>`
 
 `node drain`, `node undrain`, `node maintenance`, `node label`은 `HOST`를 생략하면 로컬 호스트를 기본으로 사용합니다.
 
@@ -598,7 +598,7 @@ gpum node remote list
 
 #### `part`
 
-- `gpum part create --gpu nvidia-h-pool:0 --profile 1g.10gb --count 1`
+- `gpum part create --gpu <node>:<gpu-id> --profile <profile> --count 1`
 - `gpum part list`
 - `gpum part destroy --id <partition-id>`
 - `gpum part auto-optimize`
@@ -611,9 +611,9 @@ gpum node remote list
 
 #### `quota`
 
-- `gpum quota set --name alice --max-gpus 4 --max-vram 320000 --max-lease-hours 72`
-- `gpum quota status --user alice --remaining`
-- `gpum quota alert --name alice --threshold 80,90`
+- `gpum quota set --name <user-or-tenant> --max-gpus 4 --max-vram 320000 --max-lease-hours 72`
+- `gpum quota status --user <user> --remaining`
+- `gpum quota alert --name <user-or-tenant> --threshold 80,90`
 
 #### `audit`
 
@@ -629,7 +629,7 @@ gpum node remote list
 #### `report`
 
 - `gpum report usage --format json --by model`
-- `gpum report billing --rate-card rate-card.yaml`
+- `gpum report billing --rate-card <rate-card-file>`
 
 #### `integration`
 
@@ -646,8 +646,8 @@ gpum node remote list
 - `gpum system config --edit`
 - `gpum system db-check --repair --vacuum --orphan-clean`
 - `gpum system health`
-- `gpum system backup --path backup.db`
-- `gpum system restore --path backup.db`
+- `gpum system backup --path <backup-file>`
+- `gpum system restore --path <backup-file>`
 - `gpum system update`
 
 <a id="ko-supported-gpu-families"></a>
