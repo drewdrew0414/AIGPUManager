@@ -1,4 +1,3 @@
-```powershell
 #requires -Version 5.1
 
 $ErrorActionPreference = "Stop"
@@ -224,4 +223,3 @@ Write-Host "Jar: $TARGET_JAR"
 Write-Host ""
 Write-Host "Run:"
 Write-Host "  gpum --help"
-```
