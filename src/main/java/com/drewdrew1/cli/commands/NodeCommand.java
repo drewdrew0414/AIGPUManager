@@ -284,7 +284,7 @@ public class NodeCommand implements Runnable {
         @ParentCommand
         private NodeCommand nodeCommand;
 
-        @Parameters(index = "0", paramLabel = "HOST")
+        @Parameters(index = "0", arity = "0..1", paramLabel = "HOST")
         private String host;
 
         @Option(names = "--graceful")
@@ -302,32 +302,32 @@ public class NodeCommand implements Runnable {
         @Override
         public Integer call() {
             CliSupport.requireRange(timeoutMin, 1, 10_080, "timeout");
-            ensureNodeExists(nodeCommand, host);
-            nodeCommand.context().inventoryRepository().putNodeAttribute(host, "state.drained", "true");
-            nodeCommand.context().inventoryRepository().putNodeAttribute(host, "state.drained.graceful", Boolean.toString(graceful));
-            nodeCommand.context().inventoryRepository().putNodeAttribute(host, "state.drained.timeout_min", Integer.toString(timeoutMin));
-            nodeCommand.context().inventoryRepository().putNodeAttribute(host, "state.drained.reason", reason);
-            nodeCommand.context().inventoryRepository().putNodeAttribute(host, "state.drained.evict_requested", Boolean.toString(evict));
-            nodeCommand.context().auditService().log("NODE_DRAIN", actor(), host, "graceful=" + graceful + ", reason=" + reason);
-            System.out.printf("Node %s marked drained.%n", host);
+            String resolvedHost = resolveExistingHost(nodeCommand, host);
+            nodeCommand.context().inventoryRepository().putNodeAttribute(resolvedHost, "state.drained", "true");
+            nodeCommand.context().inventoryRepository().putNodeAttribute(resolvedHost, "state.drained.graceful", Boolean.toString(graceful));
+            nodeCommand.context().inventoryRepository().putNodeAttribute(resolvedHost, "state.drained.timeout_min", Integer.toString(timeoutMin));
+            nodeCommand.context().inventoryRepository().putNodeAttribute(resolvedHost, "state.drained.reason", reason);
+            nodeCommand.context().inventoryRepository().putNodeAttribute(resolvedHost, "state.drained.evict_requested", Boolean.toString(evict));
+            nodeCommand.context().auditService().log("NODE_DRAIN", actor(), resolvedHost, "graceful=" + graceful + ", reason=" + reason);
+            System.out.printf("Node %s marked drained.%n", resolvedHost);
             if (evict) {
                 int moved = 0;
                 int stuck = 0;
                 List<String> failures = new ArrayList<>();
                 for (var allocation : nodeCommand.context().allocationService().listAllocations()) {
-                    if (allocation.devices().stream().noneMatch(device -> host.equalsIgnoreCase(device.nodeHostname()))) {
+                    if (allocation.devices().stream().noneMatch(device -> resolvedHost.equalsIgnoreCase(device.nodeHostname()))) {
                         continue;
                     }
                     if (allocation.status() != com.drewdrew1.core.model.AllocationStatus.ACTIVE) {
                         continue;
                     }
                     try {
-                        var replacement = nodeCommand.context().allocationService().moveAllocationAwayFromNode(allocation.id(), host);
+                        var replacement = nodeCommand.context().allocationService().moveAllocationAwayFromNode(allocation.id(), resolvedHost);
                         nodeCommand.context().auditService().log(
                                 "NODE_EVICT_MOVE",
                                 actor(),
                                 allocation.id(),
-                                "host=" + host + ", replacement=" + replacement.id()
+                                "host=" + resolvedHost + ", replacement=" + replacement.id()
                         );
                         moved++;
                     } catch (Exception e) {
@@ -349,19 +349,19 @@ public class NodeCommand implements Runnable {
         @ParentCommand
         private NodeCommand nodeCommand;
 
-        @Parameters(index = "0", paramLabel = "HOST")
+        @Parameters(index = "0", arity = "0..1", paramLabel = "HOST")
         private String host;
 
         @Override
         public Integer call() {
-            ensureNodeExists(nodeCommand, host);
-            nodeCommand.context().inventoryRepository().removeNodeAttribute(host, "state.drained");
-            nodeCommand.context().inventoryRepository().removeNodeAttribute(host, "state.drained.graceful");
-            nodeCommand.context().inventoryRepository().removeNodeAttribute(host, "state.drained.timeout_min");
-            nodeCommand.context().inventoryRepository().removeNodeAttribute(host, "state.drained.reason");
-            nodeCommand.context().inventoryRepository().removeNodeAttribute(host, "state.drained.evict_requested");
-            nodeCommand.context().auditService().log("NODE_UNDRAIN", actor(), host, "node returned to active");
-            System.out.printf("Node %s returned to active scheduling.%n", host);
+            String resolvedHost = resolveExistingHost(nodeCommand, host);
+            nodeCommand.context().inventoryRepository().removeNodeAttribute(resolvedHost, "state.drained");
+            nodeCommand.context().inventoryRepository().removeNodeAttribute(resolvedHost, "state.drained.graceful");
+            nodeCommand.context().inventoryRepository().removeNodeAttribute(resolvedHost, "state.drained.timeout_min");
+            nodeCommand.context().inventoryRepository().removeNodeAttribute(resolvedHost, "state.drained.reason");
+            nodeCommand.context().inventoryRepository().removeNodeAttribute(resolvedHost, "state.drained.evict_requested");
+            nodeCommand.context().auditService().log("NODE_UNDRAIN", actor(), resolvedHost, "node returned to active");
+            System.out.printf("Node %s returned to active scheduling.%n", resolvedHost);
             return 0;
         }
     }
@@ -434,7 +434,7 @@ public class NodeCommand implements Runnable {
         @ParentCommand
         private NodeCommand nodeCommand;
 
-        @Parameters(index = "0", paramLabel = "HOST")
+        @Parameters(index = "0", arity = "0..1", paramLabel = "HOST")
         private String host;
 
         @Option(names = "--on")
@@ -449,17 +449,17 @@ public class NodeCommand implements Runnable {
         @Override
         public Integer call() {
             CliSupport.require(!(on && off), "Choose either --on or --off");
-            ensureNodeExists(nodeCommand, host);
+            String resolvedHost = resolveExistingHost(nodeCommand, host);
             boolean enabled = !off;
             if (enabled) {
-                nodeCommand.context().inventoryRepository().putNodeAttribute(host, "state.maintenance", "true");
-                nodeCommand.context().inventoryRepository().putNodeAttribute(host, "state.maintenance.reason", reason);
+                nodeCommand.context().inventoryRepository().putNodeAttribute(resolvedHost, "state.maintenance", "true");
+                nodeCommand.context().inventoryRepository().putNodeAttribute(resolvedHost, "state.maintenance.reason", reason);
             } else {
-                nodeCommand.context().inventoryRepository().removeNodeAttribute(host, "state.maintenance");
-                nodeCommand.context().inventoryRepository().removeNodeAttribute(host, "state.maintenance.reason");
+                nodeCommand.context().inventoryRepository().removeNodeAttribute(resolvedHost, "state.maintenance");
+                nodeCommand.context().inventoryRepository().removeNodeAttribute(resolvedHost, "state.maintenance.reason");
             }
-            nodeCommand.context().auditService().log("NODE_MAINTENANCE", actor(), host, "enabled=" + enabled + ", reason=" + reason);
-            System.out.printf("Node %s maintenance mode: %s%n", host, enabled ? "enabled" : "disabled");
+            nodeCommand.context().auditService().log("NODE_MAINTENANCE", actor(), resolvedHost, "enabled=" + enabled + ", reason=" + reason);
+            System.out.printf("Node %s maintenance mode: %s%n", resolvedHost, enabled ? "enabled" : "disabled");
             return 0;
         }
     }
@@ -469,7 +469,7 @@ public class NodeCommand implements Runnable {
         @ParentCommand
         private NodeCommand nodeCommand;
 
-        @Parameters(index = "0", paramLabel = "HOST")
+        @Parameters(index = "0", arity = "0..1", paramLabel = "HOST")
         private String host;
 
         @Option(names = "--set", split = ",", description = "One or more key=value labels")
@@ -483,30 +483,30 @@ public class NodeCommand implements Runnable {
 
         @Override
         public Integer call() {
-            ensureNodeExists(nodeCommand, host);
+            String resolvedHost = resolveExistingHost(nodeCommand, host);
             int selected = (show ? 1 : 0) + (!setPairs.isEmpty() ? 1 : 0) + (!removeKeys.isEmpty() ? 1 : 0);
             CliSupport.require(selected == 1, "Choose exactly one of --set, --remove, --show");
 
             if (show) {
-                Map<String, String> attrs = nodeCommand.context().inventoryRepository().getNodeAttributes(host);
-                System.out.printf("Labels on %s: %s%n", host, renderLabels(attrs));
+                Map<String, String> attrs = nodeCommand.context().inventoryRepository().getNodeAttributes(resolvedHost);
+                System.out.printf("Labels on %s: %s%n", resolvedHost, renderLabels(attrs));
                 return 0;
             }
             if (!setPairs.isEmpty()) {
                 Map<String, String> labels = CliSupport.parseLabels(setPairs);
                 for (Map.Entry<String, String> entry : labels.entrySet()) {
                     nodeCommand.context().inventoryRepository()
-                            .putNodeAttribute(host, "label." + entry.getKey(), entry.getValue());
+                            .putNodeAttribute(resolvedHost, "label." + entry.getKey(), entry.getValue());
                 }
-                nodeCommand.context().auditService().log("NODE_LABEL_SET", actor(), host, String.join(",", setPairs));
-                System.out.printf("Updated labels on %s.%n", host);
+                nodeCommand.context().auditService().log("NODE_LABEL_SET", actor(), resolvedHost, String.join(",", setPairs));
+                System.out.printf("Updated labels on %s.%n", resolvedHost);
                 return 0;
             }
             for (String removeKey : removeKeys) {
-                nodeCommand.context().inventoryRepository().removeNodeAttribute(host, "label." + removeKey);
+                nodeCommand.context().inventoryRepository().removeNodeAttribute(resolvedHost, "label." + removeKey);
             }
-            nodeCommand.context().auditService().log("NODE_LABEL_REMOVE", actor(), host, String.join(",", removeKeys));
-            System.out.printf("Removed labels on %s.%n", host);
+            nodeCommand.context().auditService().log("NODE_LABEL_REMOVE", actor(), resolvedHost, String.join(",", removeKeys));
+            System.out.printf("Removed labels on %s.%n", resolvedHost);
             return 0;
         }
     }
@@ -613,9 +613,13 @@ public class NodeCommand implements Runnable {
         return System.getProperty("user.name", "unknown");
     }
 
-    private static void ensureNodeExists(NodeCommand command, String host) {
-        CliSupport.requireNonBlank(host, "host");
-        CliSupport.require(command.context().inventoryRepository().findNode(host).isPresent(), "Node not found: " + host);
+    private static String resolveExistingHost(NodeCommand command, String host) {
+        String resolvedHost = host;
+        if (resolvedHost == null || resolvedHost.isBlank()) {
+            resolvedHost = command.context().systemInfoService().localNodeInventory().hostname();
+        }
+        CliSupport.require(command.context().inventoryRepository().findNode(resolvedHost).isPresent(), "Node not found: " + resolvedHost);
+        return resolvedHost;
     }
 
     private static String resolveStatus(Map<String, String> attrs) {

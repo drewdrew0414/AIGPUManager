@@ -102,4 +102,51 @@ class IntelDetectorTest {
         assertTrue(result.devices().stream().anyMatch(device -> device.model().contains("Arc Pro A60") && device.interconnectType() == InterconnectType.PCIE));
         assertTrue(result.devices().stream().anyMatch(device -> device.model().contains("Flex 170") && device.interconnectType() == InterconnectType.XE_LINK));
     }
+
+    @Test
+    void fallsBackToWindowsDisplayAdapterQueryForIntelArc() {
+        String originalOsName = System.getProperty("os.name");
+        System.setProperty("os.name", "Windows 11");
+        try {
+            FakeCommandExecutor executor = new FakeCommandExecutor()
+                    .addSuccess(List.of(
+                            "powershell",
+                            "-NoProfile",
+                            "-Command",
+                            "Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM,DriverVersion,PNPDeviceID,VideoProcessor | ConvertTo-Json -Compress"
+                    ), """
+                            [
+                              {
+                                "Name":"Intel(R) Arc(TM) Pro A60",
+                                "AdapterRAM":"12884901888",
+                                "DriverVersion":"32.0.101.6734",
+                                "PNPDeviceID":"PCI\\\\VEN_8086&DEV_56C0&SUBSYS_00000000",
+                                "VideoProcessor":"Intel Arc"
+                              },
+                              {
+                                "Name":"Microsoft Basic Display Adapter",
+                                "AdapterRAM":"0",
+                                "DriverVersion":"10.0.26100.1",
+                                "PNPDeviceID":"ROOT\\\\BASICDISPLAY\\\\0000",
+                                "VideoProcessor":"Basic"
+                              }
+                            ]
+                            """);
+
+            DetectionResult result = new IntelDetector(executor, new CapabilityResolver(), "xpu-smi", "powershell")
+                    .detect("windows-arc", Instant.parse("2026-05-08T00:00:00Z"));
+
+            assertEquals(1, result.devices().size());
+            GpuDevice gpu = result.devices().getFirst();
+            assertEquals("Intel(R) Arc(TM) Pro A60", gpu.model());
+            assertEquals(12288L, gpu.vramTotalMb());
+            assertEquals(InterconnectType.PCIE, gpu.interconnectType());
+        } finally {
+            if (originalOsName == null) {
+                System.clearProperty("os.name");
+            } else {
+                System.setProperty("os.name", originalOsName);
+            }
+        }
+    }
 }

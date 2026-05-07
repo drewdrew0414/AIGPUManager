@@ -68,7 +68,7 @@ public class AppContext {
         List<GpuDetector> detectors = List.of(
                 new NvidiaDetector(executor, capabilityResolver, config.getTools().getNvidiaSmi()),
                 new AmdDetector(executor, capabilityResolver, config.getTools().getAmdSmi(), config.getTools().getRocmSmi()),
-                new IntelDetector(executor, capabilityResolver, config.getTools().getXpuSmi())
+                new IntelDetector(executor, capabilityResolver, config.getTools().getXpuSmi(), config.getTools().getPowershell())
         );
         InventoryRepository repository = new SqliteInventoryRepository(dbPath);
         return new InventoryService(repository, detectors, nodeInfoProvider);

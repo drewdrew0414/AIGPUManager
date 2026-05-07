@@ -272,7 +272,7 @@ public class SystemCommand implements Runnable {
                   echo Place gpu-mgr.jar in the same directory as gpum.cmd
                   exit /b 1
                 )
-                java -jar "%GPUM_TARGET_JAR%" %*
+                java --enable-native-access=ALL-UNNAMED -jar "%GPUM_TARGET_JAR%" %*
                 """;
     }
 
@@ -284,7 +284,7 @@ public class SystemCommand implements Runnable {
                   Write-Error 'gpum jar not found. Place gpu-mgr.jar in the same directory as gpum.ps1'
                   exit 1
                 }
-                & java -jar $gpumJar @args
+                & java --enable-native-access=ALL-UNNAMED -jar $gpumJar @args
                 exit $LASTEXITCODE
                 """;
     }
@@ -300,7 +300,7 @@ public class SystemCommand implements Runnable {
                   echo "Place gpu-mgr.jar in the same directory as this launcher." >&2
                   exit 1
                 fi
-                exec java -jar "$GPUM_TARGET_JAR" "$@"
+                exec java --enable-native-access=ALL-UNNAMED -jar "$GPUM_TARGET_JAR" "$@"
                 """;
     }
 

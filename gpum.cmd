@@ -10,4 +10,4 @@ if not exist "%GPUM_TARGET_JAR%" (
   exit /b 1
 )
 
-java -jar "%GPUM_TARGET_JAR%" %*
+java --enable-native-access=ALL-UNNAMED -jar "%GPUM_TARGET_JAR%" %*

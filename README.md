@@ -1,348 +1,376 @@
 # gpum
 
-GPU inventory, allocation, audit, logging, and integration CLI for AI training infrastructure.
+GPU inventory, allocation, audit, and operations CLI for AI training and inference servers.
 
-> [ NOTICE ]
-> `gpum` is designed to work without expensive GPU hardware during development. The project includes detector parsing tests, fixture-based fleet tests, and CLI integration tests so most behavior can be validated on a normal machine.
+> [!NOTICE]
+> `gpum` is designed to be useful even without expensive hardware. The project includes detector fixture tests, mixed-fleet integration tests, and SQLite-backed command tests so most workflows can be validated on a normal development machine.
 
-> [ WARNING ]
-> Some command groups are production-ready enough for local inventory, SQLite-backed metadata, logs, and basic allocation workflows. Other groups are still contract-first placeholders and are clearly marked below.
+> [!WARNING]
+> Hardware discovery quality depends on vendor tooling installed on the target host. For full metrics, install the vendor CLI for the GPUs you expect to manage:
+> - NVIDIA: `nvidia-smi`
+> - AMD: `amd-smi` or `rocm-smi`
+> - Intel: `xpu-smi`
+>
+> On Windows, `gpum` also includes a PowerShell fallback for Intel Arc / Arc Pro / Flex / Max detection when `xpu-smi` is missing.
 
-> [ TIP ]
-> On Windows, use `gpum.cmd`. On PowerShell, `.\gpum.ps1` also works. On Unix-like systems, use `./gpum`.
+> [!TIP]
+> Placeholder examples such as `<host>` or `<addr>` in the docs are not meant to be typed literally in `cmd.exe`. Replace them with actual values.
 
 ## Table of Contents
 
 - [English](#english)
-  - [Overview](#overview)
-  - [Status](#status)
-  - [Features](#features)
-  - [Supported GPU Families](#supported-gpu-families)
-  - [Architecture](#architecture)
-  - [Build and Launch](#build-and-launch)
-  - [Windows Support](#windows-support)
-  - [Configuration](#configuration)
-  - [SQLite, Audit, and Logs](#sqlite-audit-and-logs)
-  - [Command Reference](#command-reference)
-  - [Integrations](#integrations)
-  - [Testing Without GPUs](#testing-without-gpus)
-  - [Known Limits](#known-limits)
-- [한국어](#한국어)
-  - [개요](#개요)
-  - [상태](#상태)
-  - [기능](#기능)
-  - [지원 GPU 계열](#지원-gpu-계열)
-  - [구조](#구조)
-  - [빌드 및 실행](#빌드-및-실행)
-  - [Windows 지원](#windows-지원)
-  - [설정](#설정)
-  - [SQLite, Audit, Log](#sqlite-audit-log)
-  - [명령어 레퍼런스](#명령어-레퍼런스)
-  - [연동](#연동)
-  - [실장비 없이 테스트](#실장비-없이-테스트)
-  - [현재 한계](#현재-한계)
+  - [Overview](#en-overview)
+  - [Current Scope](#en-current-scope)
+  - [Installation](#en-installation)
+  - [Quick Start](#en-quick-start)
+  - [Command Groups](#en-command-groups)
+  - [Supported GPU Families](#en-supported-gpu-families)
+  - [Configuration](#en-configuration)
+  - [SQLite, Audit, and Logs](#en-sqlite-audit-and-logs)
+  - [Testing Without GPUs](#en-testing-without-gpus)
+  - [Known Limits](#en-known-limits)
+- [한국어](#korean)
+  - [개요](#ko-overview)
+  - [현재 범위](#ko-current-scope)
+  - [설치](#ko-installation)
+  - [빠른 시작](#ko-quick-start)
+  - [명령 그룹](#ko-command-groups)
+  - [지원 GPU 계열](#ko-supported-gpu-families)
+  - [설정](#ko-configuration)
+  - [SQLite, Audit, Log](#ko-sqlite-audit-and-logs)
+  - [실장비 없이 테스트](#ko-testing-without-gpus)
+  - [현재 한계](#ko-known-limits)
 
 ---
 
+<a id="english"></a>
 ## English
 
+<a id="en-overview"></a>
 ### Overview
 
-`gpum` manages GPU servers for AI training and inference workloads. It normalizes NVIDIA, AMD, and Intel hardware into one inventory model, persists metadata in SQLite, exposes allocation and audit flows through a CLI, and now includes configurable integrations for Kubernetes, MLflow, BentoML, and custom external tools.
+`gpum` manages GPU nodes as a single operational surface.
 
-### Status
+It provides:
 
-Implemented and working:
+- multi-vendor GPU inventory detection
+- node and GPU visibility
+- SQLite-backed metadata persistence
+- allocation lifecycle commands
+- audit trail and operational logs
+- governance primitives such as queue, quota, and logical partition records
+- integration entrypoints for Kubernetes, MLflow, BentoML, and custom tools
 
-- Multi-vendor inventory detection for NVIDIA, AMD, and Intel
-- Local and remote node scanning
-- SQLite-backed inventory, allocations, audit events, and operational logs
-- Basic allocation lifecycle: request, dry-run, list, info, extend, release, reap
-- Windows-friendly local command execution fallback
-- `gpum` launcher scripts: `gpum.cmd`, `gpum.ps1`, `gpum`
-- Configurable tool paths and integration defaults through YAML
-- Filterable and sortable `audit` and `log` queries
-- Integration command surface for Kubernetes, MLflow, BentoML, and custom tools
+The codebase is structured around:
 
-Implemented as command contract / partial backend:
+- `cli`: Picocli command surface
+- `core`: domain models, services, repository interfaces, config
+- `infra/detector`: vendor-specific hardware detection
+- `infra/persistence`: SQLite repositories
+- `infra/executor`: local and SSH command execution
 
-- `node drain --evict`
+<a id="en-current-scope"></a>
+### Current Scope
+
+Working and validated:
+
+- local node scan
+- remote node registration and SSH scan flow
+- NVIDIA / AMD / Intel detection
+- Windows Intel Arc fallback detection through PowerShell
+- node list / info / top / maintenance / label / drain / undrain
+- gpu list / stats / topology / health
+- allocation request / dry-run / list / info / extend / release / move / reap
+- queue / quota / partition record / usage report / billing simulation
+- SQLite audit and operational logs
+- Windows and Linux launchers
+
+Implemented conservatively:
+
 - `gpu set`
 - `gpu reset`
-- `part`
-- `queue`
-- `quota`
-- `report`
 
-### Features
+These commands validate input, check inventory, and record the request safely, but they do not force vendor-level hardware mutation yet.
 
-- Unified GPU model across vendors
-- Node inventory snapshots
-- GPU topology and capability tracking
-- Lease-based allocations
-- Immutable audit trail
-- Mutable operational logs with search and sort
-- Remote SSH scans
-- YAML-driven external tool configuration
-- Windows, Linux, and macOS launch entrypoints
+<a id="en-installation"></a>
+### Installation
 
-### Supported GPU Families
+#### Windows installer
 
-Representative coverage exists for:
+Use [install.cmd](C:/Users/love7/Pictures/GPUManager/install.cmd:1).
 
-- NVIDIA: `H100`, `H200`, `B200`, `A100`, `RTX 4090`, `RTX 6000 Ada`, `L40S`
-- AMD: `MI210`, `MI250X`, `MI300X`, `Radeon PRO W7900`
-- Intel: `Data Center GPU Max 1100`, `Max 1550`, `Arc Pro A60`, `Flex 170`
+What it does:
 
-The detector architecture is not hardcoded to only these SKUs. New models are expected to flow through the same normalized `GpuDevice` model as long as their vendor tools expose compatible fields.
+- downloads `gpu-mgr.jar` from the latest GitHub Release
+- compares installed and remote versions
+- skips download if the installed version is the same or newer
+- asks before upgrading when the installed version is older
+- writes `gpum.cmd`
+- adds the install directory to the user `PATH`
 
-### Architecture
+It updates the user `PATH` through the registry and PowerShell, not `setx`, so it avoids the common Windows `1024` truncation warning.
 
-- `cli`
-  - Picocli command entrypoints
-- `core`
-  - domain models, services, repositories, config
-- `infra/detector`
-  - vendor-specific hardware parsing
-- `infra/persistence`
-  - SQLite repositories
-- `infra/executor`
-  - local and SSH command execution
-
-### Build and Launch
-
-Build:
-
-```bash
-./gradlew shadowJar
-```
-
-Run directly:
-
-```bash
-java -jar build/libs/gpu-mgr.jar --help
-```
-
-Run with launcher:
-
-```bash
-gpum --help
-```
-
-Windows:
-
-```powershell
-.\gpum.cmd --help
-.\gpum.ps1 --help
-```
-
-Unix-like:
-
-```bash
-./gpum --help
-```
-
-### Windows Support
-
-`gpum` now includes Windows-specific improvements:
-
-- launcher scripts for `cmd.exe` and PowerShell
-- fallback executable probing for `.exe`, `.cmd`, `.bat`, `.com`
-- configurable tool paths for `nvidia-smi`, `amd-smi`, `rocm-smi`, `xpu-smi`, `kubectl`, `mlflow`, `bentoml`, `ssh`
-
-This means a Windows host can scan local inventory, query SQLite, inspect logs, and run CLI integrations without requiring a Unix shell.
-
-### Configuration
-
-Use `--config` with a YAML file:
-
-```bash
-gpum --config gpum.example.yaml system config
-```
-
-Example file: [gpum.example.yaml](C:/Users/love7/Pictures/GPUManager/gpum.example.yaml:1)
-
-Supported config areas:
-
-- `tools`
-  - tool executable names or absolute paths
-- `kubernetes`
-  - default context, namespace, service account, image pull policy
-- `mlflow`
-  - tracking URI, registry URI, experiment, profile
-- `bentoml`
-  - endpoint, home, working directory
-- `externalTools`
-  - arbitrary custom commands with default arguments
-
-Show defaults:
-
-```bash
-gpum system config --show-defaults
-```
-
-### SQLite, Audit, and Logs
-
-SQLite is the default metadata store and works out of the box at:
+Default install directory:
 
 ```text
-data/gpu-mgr.db
+%LocalAppData%\gpum
 ```
 
-Stored entities include:
+#### Linux installer
 
-- nodes
-- GPUs
-- node attributes / labels
-- remote node registrations
-- allocations and GPU claims
-- audit events
-- operational log entries
+Use [install-gpum.sh](C:/Users/love7/Pictures/GPUManager/install-gpum.sh:1).
 
-Audit commands:
+Example:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/drewdrew0414/AIGPUManager/main/install-gpum.sh | sh
+```
+
+What it does:
+
+- downloads `gpu-mgr.jar` from the latest GitHub Release
+- compares installed and remote versions
+- skips download if the installed version is the same or newer
+- asks before upgrading when the installed version is older
+- writes `gpum`
+- adds the install directory to shell `PATH` in the current shell profile if needed
+
+Default install directory:
+
+```text
+$HOME/.local/bin
+```
+
+#### Portable launchers
+
+If you do not want a system install, keep the launcher and `gpu-mgr.jar` in the same directory:
+
+- Windows: [gpum.cmd](C:/Users/love7/Pictures/GPUManager/gpum.cmd:1)
+- PowerShell: [gpum.ps1](C:/Users/love7/Pictures/GPUManager/gpum.ps1:1)
+- Linux/macOS: [gpum](C:/Users/love7/Pictures/GPUManager/gpum:1)
+
+Distribution bundle:
+
+- [build/gpum-dist](C:/Users/love7/Pictures/GPUManager/build/gpum-dist)
+
+<a id="en-quick-start"></a>
+### Quick Start
+
+Scan local inventory:
 
 ```bash
-gpum audit list --event ALLOC_CREATE --sort desc --tail 20
-gpum audit list --user alice --target alloc-123 --contains release
-gpum audit trace alloc-123
+gpum node scan
+gpum node list
+gpum node info
 ```
 
-Log commands:
+List GPUs:
 
 ```bash
-gpum log write --level info --component system --category startup --message "gpum booted"
-gpum log list --component alloc --contains created --sort desc --limit 50
-gpum log tail --lines 20
+gpum gpu list
+gpum gpu stats --json
+gpum gpu health --check-ecc --report
 ```
 
-### Command Reference
+Request allocation:
+
+```bash
+gpum alloc request --gpus 1 --vram 60000 --hours 4 --dry-run
+gpum alloc request --gpus 1 --vram 60000 --hours 4
+gpum alloc list
+```
+
+Remote node registration:
+
+```bash
+gpum node remote add --ip 10.0.0.20 --ssh-user gpuadmin --alias trainer-a
+gpum node remote list
+gpum node scan --ip 10.0.0.20 --ssh-user gpuadmin
+```
+
+Windows examples using actual values:
+
+```bat
+gpum node info BOOK-BPLP86MA55
+gpum node scan --ip 10.0.0.20 --ssh-user gpuadmin
+gpum node remote list
+```
+
+<a id="en-command-groups"></a>
+### Command Groups
 
 #### `node`
 
 - `gpum node scan`
 - `gpum node scan --all`
-- `gpum node scan --ip <addr> --ssh-user <user>`
+- `gpum node scan --ip 10.0.0.20 --ssh-user gpuadmin`
 - `gpum node list`
-- `gpum node info <host>`
-- `gpum node top --metric <power|temp|util>`
-- `gpum node drain <host>`
-- `gpum node undrain <host>`
-- `gpum node maintenance <host> --on|--off`
-- `gpum node label <host> --set key=value`
-- `gpum node remote add|list|remove`
+- `gpum node info`
+- `gpum node info BOOK-BPLP86MA55`
+- `gpum node top --metric util`
+- `gpum node drain`
+- `gpum node undrain`
+- `gpum node maintenance --on --reason patching`
+- `gpum node label --show`
+- `gpum node label --set role=trainer,zone=lab`
+- `gpum node remote add --ip 10.0.0.20 --ssh-user gpuadmin`
+- `gpum node remote list`
+- `gpum node remote remove --ip 10.0.0.20`
+
+`node drain`, `node undrain`, `node maintenance`, and `node label` now default to the local host if `HOST` is omitted.
 
 #### `gpu`
 
 - `gpum gpu list`
-- `gpum gpu stats`
-- `gpum gpu health`
-- `gpum gpu topology`
-- `gpum gpu set` (validation path implemented, hardware control backend pending)
-- `gpum gpu reset` (validation path implemented, hardware reset backend pending)
+- `gpum gpu list --capability mig --min-vram 80000`
+- `gpum gpu stats --json`
+- `gpum gpu stats --export csv`
+- `gpum gpu stats --export influxdb`
+- `gpum gpu health --check-ecc --thermal-test --memory-test --report`
+- `gpum gpu topology --visualize`
+- `gpum gpu set --id <gpu-id> --power-limit 250`
+- `gpum gpu reset --id <gpu-id> --soft`
 
 #### `alloc`
 
 - `gpum alloc request`
 - `gpum alloc request --dry-run`
 - `gpum alloc list`
-- `gpum alloc info --id <id>`
-- `gpum alloc extend --id <id> --hours <n>`
-- `gpum alloc release --id <id>`
+- `gpum alloc info --id <allocation-id>`
+- `gpum alloc extend --id <allocation-id> --hours 2`
+- `gpum alloc release --id <allocation-id>`
+- `gpum alloc move --id <allocation-id> --to-node <node>`
 - `gpum alloc reap`
-- `gpum alloc move` (placeholder)
+
+#### `part`
+
+- `gpum part create --gpu nvidia-h-pool:0 --profile 1g.10gb --count 1`
+- `gpum part list`
+- `gpum part destroy --id <partition-id>`
+- `gpum part auto-optimize`
+
+#### `queue`
+
+- `gpum queue list --full --estimate`
+- `gpum queue promote --id <queue-id> --val 2`
+- `gpum queue demote --id <queue-id> --val 1`
+
+#### `quota`
+
+- `gpum quota set --name alice --max-gpus 4 --max-vram 320000 --max-lease-hours 72`
+- `gpum quota status --user alice --remaining`
+- `gpum quota alert --name alice --threshold 80,90`
 
 #### `audit`
 
-- `gpum audit list`
-- `gpum audit trace <id>`
+- `gpum audit list --tail 20`
+- `gpum audit trace <resource-id>`
 
 #### `log`
 
-- `gpum log write`
-- `gpum log list`
-- `gpum log tail`
+- `gpum log write --level info --component system --category startup --message "boot ok"`
+- `gpum log list --sort desc --limit 20`
+- `gpum log tail --lines 20`
+
+#### `report`
+
+- `gpum report usage --format json --by model`
+- `gpum report billing --rate-card rate-card.yaml`
 
 #### `integration`
 
 - `gpum integration k8s contexts`
 - `gpum integration k8s pods`
-- `gpum integration k8s submit`
-- `gpum integration k8s logs`
 - `gpum integration mlflow status`
 - `gpum integration mlflow runs`
-- `gpum integration mlflow models`
 - `gpum integration bentoml list`
-- `gpum integration bentoml models`
-- `gpum integration bentoml serve`
-- `gpum integration tool --name <custom-tool>`
+- `gpum integration tool --name custom`
 
 #### `system`
 
-- `gpum system config`
-- `gpum system db-check`
+- `gpum system config --show-defaults`
+- `gpum system config --edit`
+- `gpum system db-check --repair --vacuum --orphan-clean`
 - `gpum system health`
-- `gpum system backup`
-- `gpum system restore`
+- `gpum system backup --path backup.db`
+- `gpum system restore --path backup.db`
 - `gpum system update`
 
-#### Contract-first placeholders
+<a id="en-supported-gpu-families"></a>
+### Supported GPU Families
 
-- `part`
-- `queue`
-- `quota`
-- `report`
+Representative test coverage exists for:
 
-### Integrations
+- NVIDIA: `H100`, `H200`, `B200`, `A100`, `RTX 4090`, `RTX 6000 Ada`, `L40S`
+- AMD: `MI210`, `MI250X`, `MI300X`, `Radeon PRO W7900`
+- Intel: `Data Center GPU Max 1100`, `Max 1550`, `Arc Pro A60`, `Flex 170`
 
-#### Kubernetes
+Windows fallback coverage also includes Intel Arc family detection through the display adapter model path.
 
-Kubernetes support is CLI-driven through configured `kubectl`.
+<a id="en-configuration"></a>
+### Configuration
 
-Use cases:
+Example config:
 
-- inspect contexts
-- inspect pods
-- generate a simple GPU job manifest
-- stream pod logs
+- [gpum.example.yaml](C:/Users/love7/Pictures/GPUManager/gpum.example.yaml:1)
 
-#### MLflow
+Use:
 
-MLflow support is CLI-driven through configured `mlflow`.
+```bash
+gpum --config gpum.example.yaml system config
+```
 
-Use cases:
+Configurable areas:
 
-- inspect effective tracking configuration
-- list runs
-- list registered models
+- `tools`
+  - `nvidiaSmi`
+  - `amdSmi`
+  - `rocmSmi`
+  - `xpuSmi`
+  - `ssh`
+  - `kubectl`
+  - `mlflow`
+  - `bentoml`
+  - `powershell`
+  - `cmd`
+  - `bash`
+- `kubernetes`
+- `mlflow`
+- `bentoml`
+- `externalTools`
 
-#### BentoML
+<a id="en-sqlite-audit-and-logs"></a>
+### SQLite, Audit, and Logs
 
-BentoML support is CLI-driven through configured `bentoml`.
+Default database path:
 
-Use cases:
+```text
+data/gpu-mgr.db
+```
 
-- list Bentos
-- list BentoML models
-- start a local service
+Stored data:
 
-#### Custom tools
+- nodes
+- GPUs
+- node attributes and labels
+- remote nodes
+- allocations and claims
+- queue entries
+- partition records
+- quota policies
+- audit events
+- operational logs
 
-`externalTools` in YAML lets you wire additional platforms without changing code. Examples:
+Examples:
 
-- Ray
-- Slurm
-- Airflow
-- internal deployment wrappers
-- cluster-specific utilities
+```bash
+gpum audit list --event ALLOC_CREATE --sort desc --tail 20
+gpum log list --component alloc --contains queued --sort desc --limit 50
+gpum system db-check --repair --vacuum --orphan-clean
+```
 
+<a id="en-testing-without-gpus"></a>
 ### Testing Without GPUs
-
-The project already supports hardware-free validation:
-
-- detector output fixture tests
-- mixed-vendor fleet fixture tests
-- CLI command matrix tests
-- SQLite integration tests
 
 Run:
 
@@ -350,61 +378,279 @@ Run:
 ./gradlew test
 ```
 
+Validation strategy:
+
+- detector fixture parsing
+- mixed-vendor fleet fixtures
+- CLI command matrix tests
+- SQLite repository tests
+- allocation / governance flow tests
+
+<a id="en-known-limits"></a>
 ### Known Limits
 
-> [!WARNING]
-> The following areas are not fully implemented yet:
+Still conservative or partial:
 
-- live GPU power / clock mutation
-- true GPU reset and process cleanup
-- full MIG lifecycle control
-- queue scheduling backend
-- quota enforcement backend
-- billing / report generation backend
-- real Kubernetes job mutation with resource patching
+- vendor-level GPU power / clock / ECC mutation
+- true process cleanup on GPU release
+- real MIG partition lifecycle
+- cluster-grade preemption and queue scheduling
+- deep NIC / NUMA / RDMA inspection on every platform
+- Intel Windows fallback metrics beyond coarse inventory
 
 ---
 
+<a id="korean"></a>
 ## 한국어
 
+<a id="ko-overview"></a>
 ### 개요
 
-`gpum`은 AI 학습/추론용 GPU 서버를 대상으로 인벤토리 수집, 자원 할당, 감사 이력, 운영 로그, 외부 플랫폼 연동을 제공하는 CLI입니다. NVIDIA, AMD, Intel 장비를 하나의 공통 모델로 정규화하고, SQLite에 메타데이터를 저장합니다.
+`gpum`은 AI 학습/추론 서버를 대상으로 GPU 인벤토리 수집, 자원 할당, 감사 로그, 운영 로그, 외부 플랫폼 연동을 제공하는 CLI입니다.
 
-### 상태
+주요 역할:
+
+- 멀티벤더 GPU 탐지
+- 노드/장치 현황 조회
+- SQLite 기반 메타데이터 저장
+- allocation 라이프사이클 관리
+- audit / operational log 관리
+- queue / quota / partition record 관리
+- Kubernetes / MLflow / BentoML / custom tool 연동
+
+<a id="ko-current-scope"></a>
+### 현재 범위
 
 실제로 동작하는 범위:
 
-- NVIDIA / AMD / Intel 인벤토리 탐지
-- 로컬 / 원격 노드 스캔
-- SQLite 기반 인벤토리 / allocation / audit / log 저장
-- 기본 allocation 라이프사이클
-- Windows 실행 경로와 `gpum` 런처
-- YAML 설정
-- 정렬 / 필터가 가능한 audit / log 조회
-- Kubernetes / MLflow / BentoML / custom tool 연동 명령 표면
+- 로컬 노드 스캔
+- 원격 노드 등록 및 SSH 스캔 흐름
+- NVIDIA / AMD / Intel 탐지
+- Windows에서 Intel Arc / Arc Pro / Flex / Max fallback 탐지
+- node list / info / top / maintenance / label / drain / undrain
+- gpu list / stats / topology / health
+- alloc request / dry-run / list / info / extend / release / move / reap
+- queue / quota / partition record / usage report / billing simulation
+- SQLite audit / log
+- Windows / Linux 런처
 
-계약은 있지만 백엔드가 제한적인 범위:
+보수적으로 구현된 범위:
 
-- `node drain --evict`
 - `gpu set`
 - `gpu reset`
-- `part`
-- `queue`
-- `quota`
-- `report`
 
-### 기능
+이 둘은 입력 검증, 인벤토리 확인, 로그 기록까지는 하지만 실제 벤더 수준 하드웨어 제어는 아직 강제하지 않습니다.
 
-- 멀티벤더 GPU 공통 추상화
-- 노드/장치 인벤토리 수집
-- GPU capability / topology 표시
-- lease 기반 allocation
-- immutable audit trail
-- 검색 가능한 operational log
-- SSH 원격 스캔
-- 외부 도구 경로 / 기본값 YAML 설정
+<a id="ko-installation"></a>
+### 설치
 
+#### Windows 설치
+
+[install.cmd](C:/Users/love7/Pictures/GPUManager/install.cmd:1)를 사용합니다.
+
+동작:
+
+- 최신 GitHub Release의 `gpu-mgr.jar` 다운로드
+- 설치 버전과 원격 버전 비교
+- 설치 버전이 같거나 높으면 다운로드 생략
+- 설치 버전이 낮으면 업그레이드 여부 확인
+- `gpum.cmd` 생성
+- 사용자 `PATH`에 설치 디렉터리 자동 추가
+
+중요한 점:
+
+- `setx`를 쓰지 않습니다.
+- PowerShell과 레지스트리 기반으로 user `PATH`를 갱신하므로 `1024` 길이 경고 문제를 피합니다.
+
+기본 설치 경로:
+
+```text
+%LocalAppData%\gpum
+```
+
+#### Linux 설치
+
+[install-gpum.sh](C:/Users/love7/Pictures/GPUManager/install-gpum.sh:1)를 사용합니다.
+
+예시:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/drewdrew0414/AIGPUManager/main/install-gpum.sh | sh
+```
+
+동작:
+
+- 최신 GitHub Release의 `gpu-mgr.jar` 다운로드
+- 설치 버전과 원격 버전 비교
+- 설치 버전이 같거나 높으면 생략
+- 설치 버전이 낮으면 업그레이드 여부 확인
+- `gpum` 런처 생성
+- 필요 시 shell profile에 `PATH` 추가
+
+기본 설치 경로:
+
+```text
+$HOME/.local/bin
+```
+
+#### 포터블 실행
+
+설치 대신 런처와 `gpu-mgr.jar`를 같은 디렉터리에 두고 바로 실행할 수도 있습니다.
+
+- Windows: [gpum.cmd](C:/Users/love7/Pictures/GPUManager/gpum.cmd:1)
+- PowerShell: [gpum.ps1](C:/Users/love7/Pictures/GPUManager/gpum.ps1:1)
+- Linux/macOS: [gpum](C:/Users/love7/Pictures/GPUManager/gpum:1)
+
+배포 번들:
+
+- [build/gpum-dist](C:/Users/love7/Pictures/GPUManager/build/gpum-dist)
+
+<a id="ko-quick-start"></a>
+### 빠른 시작
+
+로컬 인벤토리 스캔:
+
+```bash
+gpum node scan
+gpum node list
+gpum node info
+```
+
+GPU 조회:
+
+```bash
+gpum gpu list
+gpum gpu stats --json
+gpum gpu health --check-ecc --report
+```
+
+할당 요청:
+
+```bash
+gpum alloc request --gpus 1 --vram 60000 --hours 4 --dry-run
+gpum alloc request --gpus 1 --vram 60000 --hours 4
+gpum alloc list
+```
+
+원격 노드 등록:
+
+```bash
+gpum node remote add --ip 10.0.0.20 --ssh-user gpuadmin --alias trainer-a
+gpum node remote list
+gpum node scan --ip 10.0.0.20 --ssh-user gpuadmin
+```
+
+Windows에서 실제 입력 예시:
+
+```bat
+gpum node info BOOK-BPLP86MA55
+gpum node scan --ip 10.0.0.20 --ssh-user gpuadmin
+gpum node remote list
+```
+
+`<host>`, `<addr>` 같은 문구를 그대로 치면 안 됩니다. 실제 값으로 바꿔서 실행해야 합니다.
+
+<a id="ko-command-groups"></a>
+### 명령 그룹
+
+#### `node`
+
+- `gpum node scan`
+- `gpum node scan --all`
+- `gpum node scan --ip 10.0.0.20 --ssh-user gpuadmin`
+- `gpum node list`
+- `gpum node info`
+- `gpum node info BOOK-BPLP86MA55`
+- `gpum node top --metric util`
+- `gpum node drain`
+- `gpum node undrain`
+- `gpum node maintenance --on --reason patching`
+- `gpum node label --show`
+- `gpum node label --set role=trainer,zone=lab`
+- `gpum node remote add --ip 10.0.0.20 --ssh-user gpuadmin`
+- `gpum node remote list`
+- `gpum node remote remove --ip 10.0.0.20`
+
+`node drain`, `node undrain`, `node maintenance`, `node label`은 `HOST`를 생략하면 로컬 호스트를 기본으로 사용합니다.
+
+#### `gpu`
+
+- `gpum gpu list`
+- `gpum gpu list --capability mig --min-vram 80000`
+- `gpum gpu stats --json`
+- `gpum gpu stats --export csv`
+- `gpum gpu stats --export influxdb`
+- `gpum gpu health --check-ecc --thermal-test --memory-test --report`
+- `gpum gpu topology --visualize`
+- `gpum gpu set --id <gpu-id> --power-limit 250`
+- `gpum gpu reset --id <gpu-id> --soft`
+
+#### `alloc`
+
+- `gpum alloc request`
+- `gpum alloc request --dry-run`
+- `gpum alloc list`
+- `gpum alloc info --id <allocation-id>`
+- `gpum alloc extend --id <allocation-id> --hours 2`
+- `gpum alloc release --id <allocation-id>`
+- `gpum alloc move --id <allocation-id> --to-node <node>`
+- `gpum alloc reap`
+
+#### `part`
+
+- `gpum part create --gpu nvidia-h-pool:0 --profile 1g.10gb --count 1`
+- `gpum part list`
+- `gpum part destroy --id <partition-id>`
+- `gpum part auto-optimize`
+
+#### `queue`
+
+- `gpum queue list --full --estimate`
+- `gpum queue promote --id <queue-id> --val 2`
+- `gpum queue demote --id <queue-id> --val 1`
+
+#### `quota`
+
+- `gpum quota set --name alice --max-gpus 4 --max-vram 320000 --max-lease-hours 72`
+- `gpum quota status --user alice --remaining`
+- `gpum quota alert --name alice --threshold 80,90`
+
+#### `audit`
+
+- `gpum audit list --tail 20`
+- `gpum audit trace <resource-id>`
+
+#### `log`
+
+- `gpum log write --level info --component system --category startup --message "boot ok"`
+- `gpum log list --sort desc --limit 20`
+- `gpum log tail --lines 20`
+
+#### `report`
+
+- `gpum report usage --format json --by model`
+- `gpum report billing --rate-card rate-card.yaml`
+
+#### `integration`
+
+- `gpum integration k8s contexts`
+- `gpum integration k8s pods`
+- `gpum integration mlflow status`
+- `gpum integration mlflow runs`
+- `gpum integration bentoml list`
+- `gpum integration tool --name custom`
+
+#### `system`
+
+- `gpum system config --show-defaults`
+- `gpum system config --edit`
+- `gpum system db-check --repair --vacuum --orphan-clean`
+- `gpum system health`
+- `gpum system backup --path backup.db`
+- `gpum system restore --path backup.db`
+- `gpum system update`
+
+<a id="ko-supported-gpu-families"></a>
 ### 지원 GPU 계열
 
 대표 테스트 커버리지:
@@ -413,214 +659,72 @@ Run:
 - AMD: `MI210`, `MI250X`, `MI300X`, `Radeon PRO W7900`
 - Intel: `Data Center GPU Max 1100`, `Max 1550`, `Arc Pro A60`, `Flex 170`
 
-### 구조
+Windows fallback 경로로 Intel Arc 계열도 인벤토리 탐지가 가능하도록 보강되어 있습니다.
 
-- `cli`
-  - 사용자 명령 진입점
-- `core`
-  - 도메인 모델, 서비스, 설정
-- `infra/detector`
-  - 벤더별 하드웨어 파서
-- `infra/persistence`
-  - SQLite 저장소
-- `infra/executor`
-  - 로컬 / SSH 명령 실행
-
-### 빌드 및 실행
-
-빌드:
-
-```bash
-./gradlew shadowJar
-```
-
-직접 실행:
-
-```bash
-java -jar build/libs/gpu-mgr.jar --help
-```
-
-런처 사용:
-
-```bash
-gpum --help
-```
-
-Windows:
-
-```powershell
-.\gpum.cmd --help
-.\gpum.ps1 --help
-```
-
-### Windows 지원
-
-Windows 확장 내용:
-
-- `gpum.cmd`, `gpum.ps1`
-- `.exe`, `.cmd`, `.bat`, `.com` 실행 fallback
-- GPU vendor / kubectl / mlflow / bentoml / ssh 경로를 YAML로 교체 가능
-
+<a id="ko-configuration"></a>
 ### 설정
 
-YAML 설정 파일 예시는 [gpum.example.yaml](C:/Users/love7/Pictures/GPUManager/gpum.example.yaml:1) 에 있습니다.
+예제 파일:
 
-사용 예:
+- [gpum.example.yaml](C:/Users/love7/Pictures/GPUManager/gpum.example.yaml:1)
+
+사용:
 
 ```bash
 gpum --config gpum.example.yaml system config
 ```
 
-설정 범위:
+설정 가능 영역:
 
 - `tools`
+  - `nvidiaSmi`
+  - `amdSmi`
+  - `rocmSmi`
+  - `xpuSmi`
+  - `ssh`
+  - `kubectl`
+  - `mlflow`
+  - `bentoml`
+  - `powershell`
+  - `cmd`
+  - `bash`
 - `kubernetes`
 - `mlflow`
 - `bentoml`
 - `externalTools`
 
-기본값 보기:
-
-```bash
-gpum system config --show-defaults
-```
-
+<a id="ko-sqlite-audit-and-logs"></a>
 ### SQLite, Audit, Log
 
-기본 DB:
+기본 DB 경로:
 
 ```text
 data/gpu-mgr.db
 ```
 
-저장되는 주요 데이터:
+저장 데이터:
 
 - 노드
 - GPU
-- 라벨 / 속성
-- 원격 노드 등록
+- 노드 속성/라벨
+- 원격 노드
 - allocation / claim
+- queue entry
+- partition record
+- quota policy
 - audit event
 - operational log
 
-Audit 예:
+예시:
 
 ```bash
 gpum audit list --event ALLOC_CREATE --sort desc --tail 20
-gpum audit trace alloc-123
+gpum log list --component alloc --contains queued --sort desc --limit 50
+gpum system db-check --repair --vacuum --orphan-clean
 ```
 
-Log 예:
-
-```bash
-gpum log write --level info --component system --category startup --message "gpum booted"
-gpum log list --component alloc --contains created --sort desc --limit 50
-gpum log tail --lines 20
-```
-
-### 명령어 레퍼런스
-
-#### `node`
-
-- `gpum node scan`
-- `gpum node scan --all`
-- `gpum node scan --ip <addr> --ssh-user <user>`
-- `gpum node list`
-- `gpum node info <host>`
-- `gpum node top`
-- `gpum node drain`
-- `gpum node undrain`
-- `gpum node maintenance`
-- `gpum node label`
-- `gpum node remote add|list|remove`
-
-#### `gpu`
-
-- `gpum gpu list`
-- `gpum gpu stats`
-- `gpum gpu health`
-- `gpum gpu topology`
-- `gpum gpu set`
-- `gpum gpu reset`
-
-#### `alloc`
-
-- `gpum alloc request`
-- `gpum alloc request --dry-run`
-- `gpum alloc list`
-- `gpum alloc info`
-- `gpum alloc extend`
-- `gpum alloc release`
-- `gpum alloc reap`
-- `gpum alloc move`
-
-#### `audit`
-
-- `gpum audit list`
-- `gpum audit trace`
-
-#### `log`
-
-- `gpum log write`
-- `gpum log list`
-- `gpum log tail`
-
-#### `integration`
-
-- `gpum integration k8s contexts|pods|submit|logs`
-- `gpum integration mlflow status|runs|models`
-- `gpum integration bentoml list|models|serve`
-- `gpum integration tool --name <custom>`
-
-#### `system`
-
-- `gpum system config`
-- `gpum system db-check`
-- `gpum system health`
-- `gpum system backup`
-- `gpum system restore`
-- `gpum system update`
-
-#### 플레이스홀더
-
-- `part`
-- `queue`
-- `quota`
-- `report`
-
-### 연동
-
-#### Kubernetes
-
-- context 조회
-- pod 조회
-- 간단한 GPU job manifest 생성
-- pod log 조회
-
-#### MLflow
-
-- tracking 설정 확인
-- run 조회
-- model 조회
-
-#### BentoML
-
-- Bento 목록 조회
-- model 목록 조회
-- serve 실행
-
-#### 기타 도구
-
-`externalTools`를 통해 Ray, Slurm, 사내 wrapper 등도 연결할 수 있습니다.
-
+<a id="ko-testing-without-gpus"></a>
 ### 실장비 없이 테스트
-
-가능한 검증 방식:
-
-- detector fixture test
-- mixed fleet fixture test
-- CLI integration test
-- SQLite integration test
 
 실행:
 
@@ -628,15 +732,22 @@ gpum log tail --lines 20
 ./gradlew test
 ```
 
+검증 방식:
+
+- detector fixture parsing
+- mixed-vendor fleet fixture
+- CLI command matrix test
+- SQLite repository test
+- allocation / governance flow test
+
+<a id="ko-known-limits"></a>
 ### 현재 한계
 
-> [!WARNING]
-> 아직 완전하지 않은 부분:
+아직 보수적이거나 부분 구현인 영역:
 
-- 실제 GPU power / clock 제어
-- 진짜 GPU reset / process cleaner
-- 완전한 MIG lifecycle
-- queue backend
-- quota enforcement
-- billing / report backend
-- 실제 Kubernetes 리소스 patching 기반 배포 자동화
+- 벤더 수준 GPU power / clock / ECC 실제 제어
+- release 시 실제 process cleanup
+- 진짜 MIG lifecycle 제어
+- 대규모 queue scheduling / preemption
+- 모든 플랫폼에서의 깊은 NIC / NUMA / RDMA 분석
+- Intel Windows fallback의 정밀 메트릭 수집

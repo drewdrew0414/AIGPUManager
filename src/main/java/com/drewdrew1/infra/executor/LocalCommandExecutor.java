@@ -18,8 +18,10 @@ public class LocalCommandExecutor implements CommandExecutor {
 
     @Override
     public CommandResult execute(List<String> command) {
-        CommandExecutionException lastError = null;
+        CommandExecutionException firstError = null;
+        List<String> attempted = new ArrayList<>();
         for (List<String> candidate : commandCandidates(command)) {
+            attempted.add(candidate.getFirst());
             try {
                 Process process = new ProcessBuilder(candidate).start();
                 boolean finished = process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS);
@@ -32,15 +34,18 @@ public class LocalCommandExecutor implements CommandExecutor {
                 String stderr = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
                 return new CommandResult(candidate, process.exitValue(), stdout, stderr);
             } catch (IOException e) {
-                lastError = new CommandExecutionException("Failed to execute command: " + String.join(" ", candidate), e);
+                if (firstError == null) {
+                    firstError = new CommandExecutionException("Failed to execute command: " + String.join(" ", command), e);
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new CommandExecutionException("Interrupted while executing command: " + String.join(" ", candidate), e);
             }
         }
-        throw lastError == null
-                ? new CommandExecutionException("Failed to execute command: " + String.join(" ", command))
-                : lastError;
+        String detail = attempted.isEmpty() ? "" : " (tried: " + String.join(", ", attempted) + ")";
+        throw firstError == null
+                ? new CommandExecutionException("Failed to execute command: " + String.join(" ", command) + detail)
+                : new CommandExecutionException("Failed to execute command: " + String.join(" ", command) + detail, firstError);
     }
 
     private List<List<String>> commandCandidates(List<String> command) {

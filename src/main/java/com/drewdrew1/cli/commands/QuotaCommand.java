@@ -105,7 +105,8 @@ public class QuotaCommand implements Runnable {
                 values.add(threshold);
             }
             quotaCommand.parent.createContext().governanceService().saveQuotaAlerts(name, values);
-            QuotaAlertPolicy policy = quotaCommand.parent.createContext().governanceService().quotaAlertPolicy(name).orElseThrow();
+            QuotaAlertPolicy policy = quotaCommand.parent.createContext().governanceService().quotaAlertPolicy(name)
+                    .orElseThrow(() -> new IllegalStateException("Quota alerts were not persisted for " + name));
             System.out.printf("Quota alerts saved for %s: %s%n", policy.name(), policy.thresholds());
             return 0;
         }

@@ -7,4 +7,4 @@ if (-not (Test-Path $gpumJar)) {
     Write-Error "gpum jar not found. Place gpu-mgr.jar in the same directory as gpum.ps1"
 }
 
-& java -jar $gpumJar @args
+& java --enable-native-access=ALL-UNNAMED -jar $gpumJar @args

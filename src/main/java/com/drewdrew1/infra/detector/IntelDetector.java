@@ -3,8 +3,11 @@ package com.drewdrew1.infra.detector;
 import com.drewdrew1.core.detector.DetectionResult;
 import com.drewdrew1.core.detector.GpuDetector;
 import com.drewdrew1.core.model.GpuDevice;
+import com.drewdrew1.core.model.HealthState;
+import com.drewdrew1.core.model.InterconnectType;
 import com.drewdrew1.core.model.GpuVendor;
 import com.drewdrew1.core.service.CapabilityResolver;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.drewdrew1.infra.executor.CommandExecutionException;
 import com.drewdrew1.infra.executor.CommandExecutor;
 import com.drewdrew1.infra.executor.CommandResult;
@@ -21,15 +24,42 @@ public class IntelDetector implements GpuDetector {
     private final CommandExecutor commandExecutor;
     private final CapabilityResolver capabilityResolver;
     private final String xpuSmiCommand;
+    private final String powershellCommand;
 
     public IntelDetector(CommandExecutor commandExecutor, CapabilityResolver capabilityResolver, String xpuSmiCommand) {
+        this(commandExecutor, capabilityResolver, xpuSmiCommand, "powershell");
+    }
+
+    public IntelDetector(
+            CommandExecutor commandExecutor,
+            CapabilityResolver capabilityResolver,
+            String xpuSmiCommand,
+            String powershellCommand
+    ) {
         this.commandExecutor = commandExecutor;
         this.capabilityResolver = capabilityResolver;
         this.xpuSmiCommand = xpuSmiCommand;
+        this.powershellCommand = powershellCommand;
     }
 
     @Override
     public DetectionResult detect(String hostname, Instant scannedAt) {
+        DetectionResult xpuResult = detectViaXpuSmi(hostname, scannedAt);
+        if (!xpuResult.devices().isEmpty()) {
+            return xpuResult;
+        }
+        if (isWindows()) {
+            DetectionResult fallback = detectViaWindowsDisplayAdapter(hostname, scannedAt);
+            if (!fallback.devices().isEmpty()) {
+                List<String> warnings = new ArrayList<>(xpuResult.warnings());
+                warnings.addAll(fallback.warnings());
+                return new DetectionResult(GpuVendor.INTEL, fallback.devices(), warnings);
+            }
+        }
+        return xpuResult;
+    }
+
+    private DetectionResult detectViaXpuSmi(String hostname, Instant scannedAt) {
         try {
             CommandResult discovery = commandExecutor.execute(List.of(xpuSmiCommand, "discovery", "-j"));
             if (!discovery.isSuccess()) {
@@ -59,6 +89,33 @@ public class IntelDetector implements GpuDetector {
                     GpuVendor.INTEL,
                     Collections.emptyList(),
                     List.of("Intel detector unavailable: " + e.getMessage())
+            );
+        }
+    }
+
+    private DetectionResult detectViaWindowsDisplayAdapter(String hostname, Instant scannedAt) {
+        try {
+            CommandResult result = commandExecutor.execute(List.of(
+                    powershellCommand,
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_VideoController | " +
+                            "Select-Object Name,AdapterRAM,DriverVersion,PNPDeviceID,VideoProcessor | ConvertTo-Json -Compress"
+            ));
+            if (!result.isSuccess()) {
+                return new DetectionResult(
+                        GpuVendor.INTEL,
+                        Collections.emptyList(),
+                        List.of("Intel Windows fallback failed: " + result.stderr().trim())
+                );
+            }
+            List<GpuDevice> devices = parseWindowsDisplayAdapters(hostname, scannedAt, result.stdout());
+            return new DetectionResult(GpuVendor.INTEL, devices, List.of());
+        } catch (CommandExecutionException e) {
+            return new DetectionResult(
+                    GpuVendor.INTEL,
+                    Collections.emptyList(),
+                    List.of("Intel Windows fallback unavailable: " + e.getMessage())
             );
         }
     }
@@ -113,6 +170,87 @@ public class IntelDetector implements GpuDetector {
             ));
         }
         return devices;
+    }
+
+    private List<GpuDevice> parseWindowsDisplayAdapters(String hostname, Instant scannedAt, String json) {
+        try {
+            JsonNode root = DetectorSupport.OBJECT_MAPPER.readTree(json);
+            List<GpuDevice> devices = new ArrayList<>();
+            if (root == null || root.isNull()) {
+                return devices;
+            }
+            if (root.isArray()) {
+                for (JsonNode node : root) {
+                    addWindowsDisplayAdapter(devices, hostname, scannedAt, node, devices.size());
+                }
+            } else if (root.isObject()) {
+                addWindowsDisplayAdapter(devices, hostname, scannedAt, root, 0);
+            }
+            return devices;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Failed to parse Intel Windows fallback payload", e);
+        }
+    }
+
+    private void addWindowsDisplayAdapter(List<GpuDevice> devices, String hostname, Instant scannedAt, JsonNode node, int index) {
+        String model = text(node, "Name");
+        if (!matchesIntelAcceleratorModel(model)) {
+            return;
+        }
+        Long adapterRamMb = bytesToMb(text(node, "AdapterRAM"));
+        devices.add(new GpuDevice(
+                hostname,
+                GpuVendor.INTEL,
+                Integer.toString(index),
+                model,
+                DetectorSupport.blankToNull(text(node, "PNPDeviceID")),
+                null,
+                DetectorSupport.blankToNull(text(node, "DriverVersion")),
+                adapterRamMb,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                InterconnectType.PCIE,
+                HealthState.UNKNOWN,
+                false,
+                false,
+                true,
+                true,
+                scannedAt
+        ));
+    }
+
+    private boolean matchesIntelAcceleratorModel(String model) {
+        if (model == null) {
+            return false;
+        }
+        String normalized = model.toLowerCase();
+        if (!normalized.contains("intel")) {
+            return false;
+        }
+        return normalized.contains("arc")
+                || normalized.contains("flex")
+                || normalized.contains("max")
+                || normalized.contains("data center gpu")
+                || normalized.contains("iris xe max");
+    }
+
+    private static String text(JsonNode node, String field) {
+        JsonNode value = node.get(field);
+        return value == null || value.isNull() ? null : value.asText();
+    }
+
+    private static Long bytesToMb(String raw) {
+        Long bytes = DetectorSupport.parseLongValue(raw);
+        return bytes == null ? null : bytes / (1024 * 1024);
+    }
+
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase().contains("win");
     }
 
     private static Double asDouble(Map<String, String> attributes, String... fragments) {

@@ -57,7 +57,7 @@ public final class CliSupport {
                 Files.createDirectories(parent);
             }
         } catch (Exception e) {
-            throw new IllegalArgumentException("Failed to prepare path: " + path);
+            throw new IllegalArgumentException("Failed to prepare path: " + path + " (" + e.getMessage() + ")");
         }
     }
 

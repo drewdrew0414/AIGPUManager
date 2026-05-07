@@ -135,7 +135,8 @@ public class SqliteGovernanceRepository implements GovernanceRepository {
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to create queue entry", e);
         }
-        return findQueueEntry(entry.id()).orElseThrow();
+        return findQueueEntry(entry.id())
+                .orElseThrow(() -> new IllegalStateException("Queue entry was inserted but could not be reloaded: " + entry.id()));
     }
 
     @Override
@@ -188,7 +189,8 @@ public class SqliteGovernanceRepository implements GovernanceRepository {
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to update queue priority", e);
         }
-        return findQueueEntry(id).orElseThrow();
+        return findQueueEntry(id)
+                .orElseThrow(() -> new IllegalStateException("Queue entry disappeared after priority update: " + id));
     }
 
     @Override

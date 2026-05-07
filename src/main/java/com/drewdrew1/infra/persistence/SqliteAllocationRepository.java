@@ -223,7 +223,8 @@ public class SqliteAllocationRepository implements AllocationRepository {
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to create allocation", e);
         }
-        return findById(record.id()).orElseThrow();
+        return findById(record.id())
+                .orElseThrow(() -> new IllegalStateException("Allocation was inserted but could not be reloaded: " + record.id()));
     }
 
     @Override

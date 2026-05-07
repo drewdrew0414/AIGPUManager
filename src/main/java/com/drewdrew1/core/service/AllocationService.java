@@ -65,7 +65,8 @@ public class AllocationService {
         }
         Instant releasedAt = Instant.now();
         allocationRepository.updateStatus(id, AllocationStatus.RELEASED, releasedAt);
-        return allocationRepository.findById(id).orElseThrow();
+        return allocationRepository.findById(id)
+                .orElseThrow(() -> new IllegalStateException("Allocation disappeared after release: " + id));
     }
 
     public AllocationRecord extendAllocation(String id, int hours) {
@@ -77,7 +78,8 @@ public class AllocationService {
         }
         Instant expiresAt = existing.expiresAt().plus(hours, ChronoUnit.HOURS);
         allocationRepository.updateExpiresAt(id, expiresAt);
-        return allocationRepository.findById(id).orElseThrow();
+        return allocationRepository.findById(id)
+                .orElseThrow(() -> new IllegalStateException("Allocation disappeared after extend: " + id));
     }
 
     public void reconcileExpiredAllocations() {

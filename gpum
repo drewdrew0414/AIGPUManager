@@ -10,4 +10,4 @@ if [ ! -f "$GPUM_TARGET_JAR" ]; then
   exit 1
 fi
 
-exec java -jar "$GPUM_TARGET_JAR" "$@"
+exec java --enable-native-access=ALL-UNNAMED -jar "$GPUM_TARGET_JAR" "$@"
