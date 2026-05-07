@@ -18,6 +18,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+/** Verifies that inventory scans are persisted to SQLite correctly. */
 class InventoryServiceTest {
     @TempDir
     Path tempDir;

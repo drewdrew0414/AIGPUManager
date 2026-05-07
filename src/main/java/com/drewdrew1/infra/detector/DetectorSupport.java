@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
+/** Provides shared parsing helpers used by multiple vendor detectors. */
 final class DetectorSupport {
     static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 

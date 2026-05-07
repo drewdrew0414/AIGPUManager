@@ -6,6 +6,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+/** Runs commands on the local machine with a bounded timeout. */
 public class LocalCommandExecutor implements CommandExecutor {
     private final Duration timeout;
 

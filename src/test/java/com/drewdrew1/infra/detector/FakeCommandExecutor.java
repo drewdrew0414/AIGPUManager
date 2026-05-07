@@ -8,6 +8,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/** Provides deterministic command responses for detector and service tests. */
 final class FakeCommandExecutor implements CommandExecutor {
     private final Map<String, CommandResult> results = new HashMap<>();
 

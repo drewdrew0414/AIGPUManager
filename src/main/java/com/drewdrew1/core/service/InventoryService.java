@@ -13,24 +13,25 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
+/** Coordinates detector execution and persists normalized inventory results. */
 public class InventoryService {
     private final InventoryRepository inventoryRepository;
     private final List<GpuDetector> detectors;
-    private final SystemInfoService systemInfoService;
+    private final NodeInfoProvider nodeInfoProvider;
 
     public InventoryService(
             InventoryRepository inventoryRepository,
             List<GpuDetector> detectors,
-            SystemInfoService systemInfoService
+            NodeInfoProvider nodeInfoProvider
     ) {
         this.inventoryRepository = inventoryRepository;
         this.detectors = detectors;
-        this.systemInfoService = systemInfoService;
+        this.nodeInfoProvider = nodeInfoProvider;
     }
 
-    public ScanSummary scanLocalNode() {
+    public ScanSummary scanNode() {
         inventoryRepository.initialize();
-        NodeInventory node = systemInfoService.localNodeInventory();
+        NodeInventory node = nodeInfoProvider.collectNodeInventory();
         List<GpuDevice> devices = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
         Set<GpuVendor> vendors = new LinkedHashSet<>();
@@ -48,5 +49,9 @@ public class InventoryService {
         inventoryRepository.replaceNodeGpus(node.hostname(), devices);
 
         return new ScanSummary(node, devices.size(), vendors, warnings);
+    }
+
+    public ScanSummary scanLocalNode() {
+        return scanNode();
     }
 }

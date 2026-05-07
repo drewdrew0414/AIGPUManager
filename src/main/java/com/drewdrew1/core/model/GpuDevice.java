@@ -2,6 +2,7 @@ package com.drewdrew1.core.model;
 
 import java.time.Instant;
 
+/** Represents the normalized view of a GPU device across all vendors. */
 public record GpuDevice(
         String nodeHostname,
         GpuVendor vendor,

@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/** Detects AMD GPU inventory by parsing amd-smi or rocm-smi output. */
 public class AmdDetector implements GpuDetector {
     private final CommandExecutor commandExecutor;
     private final CapabilityResolver capabilityResolver;

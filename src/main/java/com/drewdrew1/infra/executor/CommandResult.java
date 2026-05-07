@@ -2,6 +2,7 @@ package com.drewdrew1.infra.executor;
 
 import java.util.List;
 
+/** Holds the result of a command execution. */
 public record CommandResult(
         List<String> command,
         int exitCode,

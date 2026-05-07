@@ -9,6 +9,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Pattern;
 
+/** Derives cross-vendor capabilities from raw detector attributes. */
 public class CapabilityResolver {
     private static final Pattern NVIDIA_LINK_PATTERN = Pattern.compile("^NV\\d+|^NV$", Pattern.CASE_INSENSITIVE);
 

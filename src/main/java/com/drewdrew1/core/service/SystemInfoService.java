@@ -7,7 +7,8 @@ import java.lang.management.ManagementFactory;
 import java.net.InetAddress;
 import java.time.Instant;
 
-public class SystemInfoService {
+/** Collects node-level system information from the local machine. */
+public class SystemInfoService implements NodeInfoProvider {
     public NodeInventory localNodeInventory() {
         String hostname = resolveHostname();
         String osName = System.getProperty("os.name", "unknown");
@@ -15,6 +16,11 @@ public class SystemInfoService {
         int cpuCores = Runtime.getRuntime().availableProcessors();
         long memoryTotalMb = resolveTotalMemoryMb();
         return new NodeInventory(hostname, osName, osArch, cpuCores, memoryTotalMb, Instant.now());
+    }
+
+    @Override
+    public NodeInventory collectNodeInventory() {
+        return localNodeInventory();
     }
 
     private long resolveTotalMemoryMb() {

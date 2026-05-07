@@ -17,6 +17,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
+/** Detects NVIDIA GPU inventory by parsing nvidia-smi output. */
 public class NvidiaDetector implements GpuDetector {
     private static final String QUERY_FIELDS = String.join(",",
             "index",

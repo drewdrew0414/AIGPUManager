@@ -8,6 +8,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 
+/** Renders inventory data into human-readable ASCII tables. */
 public class TablePrinter {
     private static final DateTimeFormatter TS_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault());
