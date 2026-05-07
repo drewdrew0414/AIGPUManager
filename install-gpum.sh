@@ -3,6 +3,7 @@ set -eu
 
 RELEASE_VERSION_URL="${GPUM_RELEASE_VERSION_URL:-https://github.com/drewdrew0414/AIGPUManager/releases/latest/download/gpum-version.txt}"
 RELEASE_JAR_URL="${GPUM_RELEASE_JAR_URL:-https://github.com/drewdrew0414/AIGPUManager/releases/latest/download/gpu-mgr.jar}"
+RELEASE_SH_URL="${GPUM_RELEASE_SH_URL:-https://github.com/drewdrew0414/AIGPUManager/releases/latest/download/gpum}"
 INSTALL_DIR="${GPUM_INSTALL_DIR:-$HOME/.local/bin}"
 TARGET_JAR="$INSTALL_DIR/gpu-mgr.jar"
 TARGET_LAUNCHER="$INSTALL_DIR/gpum"
@@ -45,30 +46,16 @@ installed_version() {
   java --enable-native-access=ALL-UNNAMED -jar "$TARGET_JAR" --version 2>/dev/null | awk 'NR == 1 { print $2 }'
 }
 
-write_launcher() {
-  cat >"$TARGET_LAUNCHER" <<'EOF'
-#!/usr/bin/env sh
-set -eu
-GPUM_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-GPUM_JAR="$GPUM_ROOT/gpu-mgr.jar"
-if [ ! -f "$GPUM_JAR" ]; then
-  echo "ERROR: gpum jar not found at '$GPUM_JAR'." >&2
-  echo "Place gpu-mgr.jar in the same directory as this launcher." >&2
-  exit 1
-fi
-exec java --enable-native-access=ALL-UNNAMED -jar "$GPUM_JAR" "$@"
-EOF
-  chmod +x "$TARGET_LAUNCHER"
-}
-
-download_release() {
-  tmp_jar="$TARGET_JAR.tmp"
+download_file() {
+  url="$1"
+  target="$2"
+  tmp_file="$target.tmp"
   cleanup() {
-    rm -f "$tmp_jar"
+    rm -f "$tmp_file"
   }
   trap cleanup EXIT INT TERM
-  curl -fsSL "$RELEASE_JAR_URL" -o "$tmp_jar"
-  mv "$tmp_jar" "$TARGET_JAR"
+  curl -fsSL "$url" -o "$tmp_file"
+  mv "$tmp_file" "$target"
   trap - EXIT INT TERM
 }
 
@@ -139,7 +126,8 @@ fi
 if [ -n "$LOCAL_VERSION" ] && version_ge "$LOCAL_VERSION" "$REMOTE_VERSION"; then
   echo "gpum $LOCAL_VERSION is already installed at $TARGET_JAR"
   echo "Remote release $REMOTE_VERSION is not newer. Skipping download."
-  write_launcher
+  download_file "$RELEASE_SH_URL" "$TARGET_LAUNCHER"
+  chmod +x "$TARGET_LAUNCHER"
   ensure_path
   exit 0
 fi
@@ -156,8 +144,9 @@ if [ -n "$LOCAL_VERSION" ]; then
   esac
 fi
 
-download_release
-write_launcher
+download_file "$RELEASE_JAR_URL" "$TARGET_JAR"
+download_file "$RELEASE_SH_URL" "$TARGET_LAUNCHER"
+chmod +x "$TARGET_LAUNCHER"
 ensure_path
 
 echo "Installed gpum $REMOTE_VERSION"

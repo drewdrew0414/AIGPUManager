@@ -68,6 +68,7 @@ tasks.register('gpumDist', Sync) {
     dependsOn tasks.named('writeGpumVersionFile')
     into layout.buildDirectory.dir('gpum-dist')
     from('install.cmd')
+    from('install-window.ps1')
     from('install-gpum.sh')
     from('gpum.cmd')
     from('gpum.ps1')
