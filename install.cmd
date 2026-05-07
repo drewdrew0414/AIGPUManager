@@ -24,21 +24,26 @@ where java >nul 2>nul || (
   exit /b 1
 )
 
+where curl >nul 2>nul || (
+  echo ERROR: curl not found in PATH
+  echo Windows 10+ should include curl by default.
+  exit /b 1
+)
+
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 
 :: -----------------------------
-:: Fetch remote version (TLS fix)
+:: Fetch remote version (curl)
 :: -----------------------------
-for /f "usebackq delims=" %%V in (`
-  powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; ^
-   (Invoke-WebRequest '%RELEASE_VERSION_URL%').Content.Trim()"
-`) do set "REMOTE_VERSION=%%V"
+for /f "delims=" %%V in ('curl -L --fail "%RELEASE_VERSION_URL%"') do set "REMOTE_VERSION=%%V"
 
 if not defined REMOTE_VERSION (
   echo ERROR: failed to fetch remote version
   exit /b 1
 )
+
+:: trim spaces + remove CR
+for /f "tokens=* delims= " %%A in ("%REMOTE_VERSION%") do set "REMOTE_VERSION=%%A"
 
 :: -----------------------------
 :: Local version
@@ -48,7 +53,7 @@ if exist "%TARGET_JAR%" (
 )
 
 :: -----------------------------
-:: Version compare (PowerShell)
+:: Version compare (PowerShell only for logic)
 :: -----------------------------
 if defined LOCAL_VERSION (
   for /f "usebackq delims=" %%R in (`
@@ -60,9 +65,7 @@ if defined LOCAL_VERSION (
 
   if /i "%CMP%"=="GE" (
     echo Already up-to-date (%LOCAL_VERSION%)
-    call :write_launcher
-    call :ensure_path
-    goto :success
+    goto :write_launcher
   )
 
   choice /M "Upgrade %LOCAL_VERSION% -> %REMOTE_VERSION% ?"
@@ -70,21 +73,12 @@ if defined LOCAL_VERSION (
 )
 
 :: -----------------------------
-:: Download (curl -> PowerShell fallback)
+:: Download (curl only)
 :: -----------------------------
 echo Downloading gpum %REMOTE_VERSION%...
 
-where curl >nul 2>nul
-if not errorlevel 1 (
-  curl -L "%RELEASE_JAR_URL%" -o "%TARGET_JAR%.tmp"
-) else (
-  powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; ^
-     $ProgressPreference='SilentlyContinue'; ^
-     Invoke-WebRequest '%RELEASE_JAR_URL%' -OutFile '%TARGET_JAR%.tmp'"
-)
-
-if not exist "%TARGET_JAR%.tmp" (
+curl -L --fail "%RELEASE_JAR_URL%" -o "%TARGET_JAR%.tmp"
+if errorlevel 1 (
   echo ERROR: download failed
   exit /b 1
 )
@@ -107,9 +101,8 @@ echo java --enable-native-access=ALL-UNNAMED -jar "%%GPUM_JAR%%" %%*
 ) > "%TARGET_CMD%"
 
 :: -----------------------------
-:: PATH (safe, no setx)
+:: PATH (safe)
 :: -----------------------------
-:ensure_path
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$dir='%INSTALL_DIR%'; ^
    $p=[Environment]::GetEnvironmentVariable('Path','User'); ^
@@ -121,12 +114,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 :: -----------------------------
 :: Done
 :: -----------------------------
-:success
 set "PATH=%INSTALL_DIR%;%PATH%"
 
 echo.
 echo Installed gpum %REMOTE_VERSION%
 echo Run: gpum --help
-echo (Restart terminal if command not found)
+echo (Restart terminal if needed)
 
 endlocal
