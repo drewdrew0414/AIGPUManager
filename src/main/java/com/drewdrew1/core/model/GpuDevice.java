@@ -1,0 +1,29 @@
+package com.drewdrew1.core.model;
+
+import java.time.Instant;
+
+public record GpuDevice(
+        String nodeHostname,
+        GpuVendor vendor,
+        String deviceId,
+        String model,
+        String uuid,
+        String pciBusId,
+        String driverVersion,
+        Long vramTotalMb,
+        Long vramFreeMb,
+        Double utilizationGpu,
+        Double utilizationMemory,
+        Double temperatureC,
+        Double powerUsageW,
+        Double powerLimitW,
+        Boolean eccEnabled,
+        InterconnectType interconnectType,
+        HealthState healthState,
+        boolean supportsMig,
+        boolean supportsPartitioning,
+        boolean supportsCompute,
+        boolean supportsContainerRuntime,
+        Instant lastScannedAt
+) {
+}
