@@ -1,5 +1,5 @@
 @echo off
-setlocal ENABLEDELAYEDEXPANSION
+setlocal
 
 set "INSTALL_DIR=%LOCALAPPDATA%\gpum"
 set "TARGET_JAR=%INSTALL_DIR%\gpu-mgr.jar"
@@ -27,15 +27,19 @@ echo   exit /b 1
 echo ^)
 echo java -jar "%%GPUM_JAR%%" %%*
 ) > "%LAUNCHER%"
-echo %PATH% | find /I "%INSTALL_DIR%" >nul
-if errorlevel 1 (
-  echo Adding to PATH...
-  setx PATH "%PATH%;%INSTALL_DIR%" >nul
-  echo PATH updated. Restart your terminal.
-)
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+"$p = [Environment]::GetEnvironmentVariable('Path','User'); ^
+if ($p -notlike '*%INSTALL_DIR%*') { ^
+  [Environment]::SetEnvironmentVariable('Path', $p + ';%INSTALL_DIR%', 'User') ^
+}"
 
 echo.
-echo Installed gpum
-echo Run: gpum --help
+echo Installed gpum to:
+echo %INSTALL_DIR%
+echo.
+echo IMPORTANT: Restart your terminal
+echo Then run:
+echo   gpum --help
 
 endlocal
