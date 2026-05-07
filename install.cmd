@@ -70,10 +70,12 @@ if defined LOCAL_VERSION (
     powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "$l=[Version]('!LOCAL_VERSION!'.TrimStart('v')); ^
      $r=[Version]('!REMOTE_VERSION!'.TrimStart('v')); ^
-     if ($l -ge $r) { 'GE' } else { 'LT' }"
+     if ($l -ge $r) { Write-Output 'GE' } else { Write-Output 'LT' }"
   ') do (
     set "CMP=%%R"
   )
+
+  set "CMP=!CMP: =!"
 
   if /i "!CMP!"=="GE" (
     echo Already up-to-date ^(!LOCAL_VERSION!^)
@@ -82,6 +84,7 @@ if defined LOCAL_VERSION (
 
   echo Installed version !LOCAL_VERSION!
   echo Remote version    !REMOTE_VERSION!
+
   choice /M "Upgrade"
 
   if errorlevel 2 (
