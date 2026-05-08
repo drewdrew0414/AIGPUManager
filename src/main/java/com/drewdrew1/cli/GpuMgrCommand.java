@@ -27,7 +27,7 @@ import java.time.Duration;
 @Command(
         name = "gpum",
         mixinStandardHelpOptions = true,
-        version = "gpum 1.0.0",
+        version = "gpum 1.0.1",
         description = "GPU inventory and resource management CLI",
         subcommands = {
                 NodeCommand.class,

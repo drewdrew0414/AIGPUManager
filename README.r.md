@@ -1,317 +1,306 @@
-# gpum v1.0.0
+# gpum v1.0.1
 
-First public release of `gpum`, a multi-vendor GPU inventory and allocation CLI for AI training and inference servers.
+Second public release of `gpum`, a multi-vendor GPU inventory, allocation, governance, and runtime operations CLI for AI training and inference servers.
 
 ## Release Summary
 
-`gpum` provides one operational surface for:
+`v1.0.1` moves `gpum` beyond inventory and allocation basics. This release adds guarded hardware control paths, RBAC approval workflow, AI runtime handoff, native telemetry probes, Prometheus export, Kubernetes manifest rendering/apply support, and a SQLite-backed worker runtime layer.
 
-- NVIDIA / AMD / Intel GPU inventory
-- node and GPU visibility
-- SQLite-backed metadata persistence
-- allocation lifecycle commands
-- audit trail and operational logs
-- governance primitives such as queue, quota, and logical partition records
-- Kubernetes / MLflow / BentoML integration entrypoints
-
-This release is focused on practical CLI workflows that can run on both development machines and real GPU servers.
+The core direction is unchanged: `gpum` should be useful on a normal development machine, but structured enough to operate real GPU servers when vendor tooling and permissions are available.
 
 ---
 
-## Main Features
+## Highlights
 
-### 1. Multi-Vendor GPU Detection
+### 1. Guarded GPU Hardware Control
 
-Supported vendors:
+`gpu set` and `gpu reset` now support real apply paths behind explicit safety gates.
 
-- NVIDIA
-- AMD
-- Intel
+Implemented guarded paths:
 
-Representative GPU family coverage:
+- `gpum gpu set --id <node>:<gpu-id> --power-limit <watts> --apply`
+- `gpum gpu set --id <node>:<gpu-id> --ecc on|off --apply`
+- `gpum gpu set --id <node>:<gpu-id> --compute-mode default|exclusive_process --apply`
+- `gpum gpu reset --id <node>:<gpu-id> --soft --apply`
+- remote apply through a registered SSH target with `--via-agent`
 
-- NVIDIA: `H100`, `H200`, `B200`, `A100`, `RTX 4090`, `RTX 6000 Ada`, `L40S`
-- AMD: `MI210`, `MI250X`, `MI300X`, `Radeon PRO W7900`
-- Intel: `Data Center GPU Max 1100`, `Max 1550`, `Arc Pro A60`, `Flex 170`
+Safety behavior:
 
-Windows-specific Intel fallback support is included for:
+- dry-run remains the default
+- real writes require `GPUM_ENABLE_HARDWARE_WRITE=1`
+- apply checks local or remote-agent routing
+- active allocations block writes unless explicitly allowed where supported
+- ECC changes require explicit reboot-required acknowledgement
+- high-risk apply operations require RBAC approval unless the actor already has the required role
+- hard resets and unsafe clock fixing remain blocked
 
-- Intel Arc
-- Intel Arc Pro
-- Intel Flex
-- Intel Max
+### 2. RBAC and Approval Workflow
 
-When `xpu-smi` is missing on Windows, `gpum` can still detect Intel display adapters through PowerShell-based inventory fallback.
+New command group:
 
-### 2. Node Management
+- `gpum rbac whoami`
+- `gpum rbac role grant`
+- `gpum rbac role revoke`
+- `gpum rbac role list`
+- `gpum rbac approval list`
+- `gpum rbac approval approve`
+- `gpum rbac approval deny`
 
-Implemented commands:
+High-risk operations can now create approval requests instead of failing silently or executing immediately.
 
-- `gpum node scan`
-- `gpum node scan --all`
-- `gpum node scan --ip <addr> --ssh-user <user>`
-- `gpum node list`
-- `gpum node info`
-- `gpum node top`
-- `gpum node drain`
-- `gpum node undrain`
-- `gpum node maintenance`
-- `gpum node label`
-- `gpum node remote add`
-- `gpum node remote list`
-- `gpum node remote remove`
+Typical flow:
 
-Notes:
+```bash
+gpum gpu reset --id <node>:<gpu-id> --soft --apply
+gpum rbac approval list --status pending
+gpum rbac approval approve --id <approval-id> --reason "maintenance window"
+gpum gpu reset --id <node>:<gpu-id> --soft --apply --approval-id <approval-id>
+```
 
-- `node drain`, `node undrain`, `node maintenance`, and `node label` default to the local host if `HOST` is omitted.
-- Remote scan uses SSH.
+### 3. Runtime Worker Layer
 
-### 3. GPU Operations
+New command group:
 
-Implemented commands:
-
-- `gpum gpu list`
-- `gpum gpu stats`
-- `gpum gpu health`
-- `gpum gpu topology`
-- `gpum gpu set`
-- `gpum gpu reset`
-
-Current behavior:
-
-- `gpu list`, `stats`, `health`, and `topology` work against the inventory database
-- `gpu stats` can export to:
-  - CSV
-  - Influx line protocol
-- `gpu set` and `gpu reset` validate input and record requests safely
-- destructive vendor-level control is intentionally conservative in `v1.0.0`
-
-### 4. Allocation Lifecycle
-
-Implemented commands:
-
-- `gpum alloc request`
-- `gpum alloc request --dry-run`
-- `gpum alloc list`
-- `gpum alloc info`
-- `gpum alloc extend`
-- `gpum alloc release`
-- `gpum alloc move`
-- `gpum alloc reap`
-
-Behavior included in this release:
-
-- dry-run placement
-- SQLite-backed allocation persistence
-- GPU claim tracking
-- basic move workflow
-- expiry / reap support
-- queue fallback when quota or capacity blocks immediate placement
-
-### 5. Governance, Audit, and Logs
-
-Implemented commands:
-
-- `gpum queue list`
-- `gpum queue promote`
-- `gpum queue demote`
-- `gpum quota set`
-- `gpum quota status`
-- `gpum quota alert`
-- `gpum part create`
-- `gpum part list`
-- `gpum part destroy`
-- `gpum part auto-optimize`
-- `gpum report usage`
-- `gpum report billing`
-- `gpum audit list`
-- `gpum audit trace`
-- `gpum log write`
-- `gpum log list`
-- `gpum log tail`
-
-### 6. Integrations
-
-Implemented integration entrypoints:
-
-- Kubernetes
-- MLflow
-- BentoML
-- custom external tools via YAML config
-
-Commands:
-
-- `gpum integration k8s ...`
-- `gpum integration mlflow ...`
-- `gpum integration bentoml ...`
-- `gpum integration tool --name <tool>`
-
-### 7. System Operations
-
-Implemented commands:
-
-- `gpum system config`
-- `gpum system db-check`
-- `gpum system health`
-- `gpum system backup`
-- `gpum system restore`
-- `gpum system update`
+- `gpum runtime native metrics`
+- `gpum runtime worker register`
+- `gpum runtime worker list`
+- `gpum runtime worker start`
+- `gpum runtime worker stop`
+- `gpum runtime worker restart`
+- `gpum runtime worker recycle`
+- `gpum runtime worker events`
+- `gpum runtime daemon run`
+- `gpum runtime oom handle`
+- `gpum runtime reconcile docker`
+- `gpum runtime reconcile k8s`
+- `gpum runtime migrate plan`
 
 Included behavior:
 
-- config inspection
-- config editing entrypoint
-- SQLite integrity check
-- orphan cleanup
-- backup / restore
-- launcher refresh
+- SQLite-backed runtime worker registry
+- restart budget tracking
+- max-lifetime recycle preview and execution
+- worker event history
+- OOM recovery strategy hooks: `restart`, `defrag`, `stop`, `release`
+- read-only Docker and Kubernetes allocation drift checks
+- checkpoint/restore migration planning for registered workers
+
+Migration is intentionally checkpoint-based. `gpum` does not claim transparent live GPU memory migration.
+
+### 4. AI Tooling Integration
+
+`gpum integration ai` can now turn an allocation into environment variables or a wrapped launch command.
+
+Supported launch targets:
+
+- `python`
+- `torchrun`
+- `accelerate`
+- `deepspeed`
+- `vllm`
+
+Preset renderers:
+
+- `torchrun-ddp`
+- `accelerate`
+- `deepspeed`
+- `vllm-serve`
+- `slurm-sbatch`
+- `ray-job`
+
+New or expanded commands:
+
+- `gpum integration ai env --allocation-id <id>`
+- `gpum integration ai env --allocation-id <id> --format json`
+- `gpum integration ai launch --allocation-id <id> --tool torchrun --arg train.py`
+- `gpum integration ai launch --allocation-id <id> --tool torchrun --from-file <template>`
+- `gpum integration ai launch --allocation-id <id> --tool torchrun --via-ssh`
+- `gpum integration ai preset list`
+- `gpum integration ai preset render`
+- `gpum integration ai preset launch`
+
+Injected values include:
+
+- `GPUM_ALLOCATION_ID`
+- `GPUM_PRIMARY_NODE`
+- `GPUM_GPU_COUNT`
+- `GPUM_GPU_MODELS`
+- `GPUM_GPU_UUIDS`
+- `GPUM_NODE_HOSTS`
+- `GPUM_NODE_COUNT`
+- `MASTER_ADDR`
+- `GPUM_RDZV_ENDPOINT`
+- vendor visibility variables such as `CUDA_VISIBLE_DEVICES`, `ROCR_VISIBLE_DEVICES`, and `ZE_AFFINITY_MASK`
+
+### 5. Kubernetes Submit Improvements
+
+`gpum integration k8s submit` now renders or applies patched manifests for allocation-scoped workloads.
+
+Added capabilities:
+
+- `Job`, `CronJob`, and `Deployment` rendering
+- optional user template input
+- allocation-aware GPU request and node pinning
+- environment injection
+- secret-backed environment variables
+- dataset PVC and additional PVC mount helpers
+- optional `kubectl apply`
+- watch, retry, and rollback-on-fail controls
+
+Default mode still prints the manifest. Real apply requires `--execute`.
+
+### 6. Health Scoring, Quarantine, and Prometheus Export
+
+New operational visibility:
+
+- `gpum gpu health --score`
+- `gpum gpu health --score --quarantine-threshold <score>`
+- `gpum report prometheus`
+- `gpum report prometheus --path <file>`
+
+Health scoring uses latest inventory metrics and monitoring thresholds. Quarantine marks low-score GPUs as unschedulable in the inventory metadata so allocation logic can avoid them.
+
+Prometheus text export covers inventory, allocation, and health data.
+
+### 7. Native Telemetry Probes
+
+`gpum runtime native metrics` adds optional direct telemetry probes:
+
+- NVIDIA NVML through JNA when available
+- Intel Level Zero loader discovery when available
+- clear `unavailable` rows when native libraries are not installed
+
+This is intentionally minimal telemetry, not a replacement for vendor CLIs.
+
+### 8. Allocation and Scheduling Improvements
+
+Allocation behavior gained:
+
+- topology-aware packed/spread placement hints
+- NVLink, XGMI, and Xe Link interconnect awareness
+- health quarantine awareness
+- heuristic VRAM estimation:
+
+```bash
+gpum alloc estimate --model <model> --params-b <n> --precision fp16 --context <tokens> --batch <n>
+```
+
+Release cleanup can now optionally handle local processes:
+
+```bash
+gpum alloc release --id <allocation-id> --kill-process
+```
+
+Process cleanup is local-node and PID-scoped, with safety checks.
+
+### 9. Partition Apply Path
+
+Partition records remain cross-vendor, but `v1.0.1` adds guarded NVIDIA MIG apply support where the device already advertises MIG capability.
+
+Commands:
+
+- `gpum part create --gpu <node>:<gpu-id> --profile <profile> --count <n>`
+- `gpum part create --gpu <node>:<gpu-id> --profile <profile> --count <n> --apply --approval-id <id>`
+- `gpum part destroy --id <partition-id>`
+- `gpum part destroy --id <partition-id> --apply --approval-id <id>`
+- `gpum part auto-optimize`
+
+MIG mode enable/disable is still intentionally manual.
+
+### 10. Configuration Expansion
+
+`gpum.example.yaml` now includes:
+
+- `tools.gpumAgentCommand`
+- `tools.docker`
+- `tools.kubectl`
+- `tools.powershell`
+- `tools.cmd`
+- `tools.bash`
+- Kubernetes submit defaults
+- monitoring thresholds
+- external tool examples for Ray and Slurm
 
 ---
 
-## Installation
+## Existing v1.0.0 Features Retained
 
-### Windows
+`v1.0.1` keeps the original public surface:
 
-Installer:
+- NVIDIA / AMD / Intel inventory
+- Windows Intel display-adapter fallback detection
+- local and SSH node scan
+- node list / info / top / drain / undrain / maintenance / label
+- GPU list / stats / health / topology
+- allocation request / dry-run / list / info / extend / release / move / reap
+- queue, quota, partition records
+- usage and billing reports
+- audit trail and operational logs
+- SQLite persistence
+- Windows and Linux launchers
+- GitHub Release oriented install scripts
 
-- `install.cmd`
+---
 
-Behavior:
+## Install
 
-- downloads `gpu-mgr.jar`
-- compares installed version and release version
-- skips download if installed version is the same or newer
-- asks before upgrading if installed version is older
-- writes `gpum.cmd`
-- updates user `PATH` without using `setx`
+Windows:
 
-Default install path:
-
-```text
-%LocalAppData%\gpum
+```bat
+install.cmd
 ```
 
-### Linux
+Linux:
 
-Installer:
-
-- `install-gpum.sh`
-
-Behavior:
-
-- downloads `gpu-mgr.jar`
-- compares installed version and release version
-- skips download if installed version is the same or newer
-- asks before upgrading if installed version is older
-- writes `gpum`
-- adds install path to shell profile if needed
-
-Default install path:
-
-```text
-$HOME/.local/bin
+```sh
+curl -fsSL https://raw.githubusercontent.com/drewdrew0414/AIGPUManager/main/install-gpum.sh | sh
 ```
 
-### Portable Use
-
-Also included:
+Portable files:
 
 - `gpu-mgr.jar`
 - `gpum.cmd`
 - `gpum.ps1`
 - `gpum`
 
-These launchers expect `gpu-mgr.jar` to be in the same directory.
+Distribution bundle:
+
+- `gpum-dist.zip`
 
 ---
 
-## Quick Start
+## Upgrade Notes
 
-### Local Inventory
-
-```bash
-gpum node scan
-gpum node list
-gpum node info
-gpum gpu list
-```
-
-### Remote Inventory
-
-```bash
-gpum node remote add --ip 10.0.0.20 --ssh-user gpuadmin --alias trainer-a
-gpum node remote list
-gpum node scan --ip 10.0.0.20 --ssh-user gpuadmin
-```
-
-### Allocation
-
-```bash
-gpum alloc request --gpus 1 --vram 60000 --hours 4 --dry-run
-gpum alloc request --gpus 1 --vram 60000 --hours 4
-gpum alloc list
-gpum alloc info --id <allocation-id>
-```
-
-### Logs and Audit
-
-```bash
-gpum log write --level info --component system --category startup --message "boot ok"
-gpum log list --sort desc --limit 20
-gpum audit list --tail 20
-```
+- If you use hardware apply commands, set `GPUM_ENABLE_HARDWARE_WRITE=1` only for trusted maintenance shells.
+- Existing SQLite data remains the expected persistence path: `data/gpu-mgr.db`.
+- RBAC approval tables and runtime worker tables are created by the SQLite repositories as needed.
+- Remote hardware apply requires a registered remote node and a usable remote `gpum` command path.
+- `gpum --version` should report `gpum 1.0.1` for this release.
 
 ---
 
-## Persistence
-
-Default database:
-
-```text
-data/gpu-mgr.db
-```
-
-Stored data includes:
-
-- nodes
-- GPUs
-- node labels and attributes
-- remote node registrations
-- allocations
-- queue entries
-- partition records
-- quota policies
-- audit events
-- operational logs
-
----
-
-## Quality and Testing
-
-This release includes:
-
-- detector fixture parsing tests
-- mixed-vendor fleet tests
-- CLI command matrix tests
-- SQLite-backed service and repository tests
-
-This means most workflows can be validated without owning expensive GPU hardware.
-
----
-
-## Known Limits in v1.0.0
+## Known Limits in v1.0.1
 
 Still conservative or partial:
 
-- real vendor-level GPU power / clock mutation
-- real GPU reset execution
-- process cleanup on release
-- full MIG lifecycle control
-- advanced queue scheduling and preemption
-- deep RDMA / NUMA / NIC analysis on every platform
-- rich Intel metrics on Windows without vendor tooling
+- hard GPU reset remains blocked
+- unsafe clock mutation remains blocked
+- MIG mode enable/disable is not automated
+- AMD and Intel partition lifecycle is still logical-only
+- process cleanup is local-node only
+- Docker and Kubernetes reconcile commands are read-only
+- migration is checkpoint/restore based, not transparent hot memory migration
+- NVML and Level Zero support is intentionally basic
+- deep NUMA, NIC, RDMA, and storage locality scheduling is not complete
+- fair-share queue aging and true cluster preemption are not implemented
 
 ---
+
+## Suggested Release Title
+
+```text
+gpum v1.0.1
+```
 
 ## Recommended Release Assets
 
@@ -326,11 +315,3 @@ Attach these files to the GitHub Release:
 - `gpum-version.txt`
 - `gpum.example.yaml`
 - `gpum-dist.zip`
-
----
-
-## Suggested Release Title
-
-```text
-gpum v1.0.0
-```
