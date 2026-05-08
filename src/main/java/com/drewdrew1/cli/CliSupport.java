@@ -4,6 +4,7 @@ import com.drewdrew1.core.model.GpuDevice;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -58,6 +59,46 @@ public final class CliSupport {
             }
         } catch (Exception e) {
             throw new IllegalArgumentException("Failed to prepare path: " + path + " (" + e.getMessage() + ")");
+        }
+    }
+
+    public static void requireRegularFile(Path path, String field) {
+        require(path != null, field + " must not be null");
+        require(Files.exists(path), field + " not found: " + path);
+        require(Files.isRegularFile(path), field + " must be a regular file: " + path);
+    }
+
+    public static void requireNotDirectory(Path path, String field) {
+        require(path != null, field + " must not be null");
+        require(!Files.exists(path) || !Files.isDirectory(path), field + " must not be a directory: " + path);
+    }
+
+    public static void requireDistinctPaths(Path left, Path right, String message) {
+        require(left != null && right != null, message);
+        require(!left.toAbsolutePath().normalize().equals(right.toAbsolutePath().normalize()), message);
+    }
+
+    public static void writeStringAtomic(Path path, String content) {
+        writeBytesAtomic(path, content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    public static void writeLinesAtomic(Path path, List<String> lines) {
+        writeStringAtomic(path, String.join(System.lineSeparator(), lines) + System.lineSeparator());
+    }
+
+    public static void writeBytesAtomic(Path path, byte[] content) {
+        ensureParentDirectory(path);
+        requireNotDirectory(path, "path");
+        Path temp = path.toAbsolutePath().resolveSibling(path.getFileName() + ".tmp");
+        try {
+            Files.write(temp, content);
+            Files.move(temp, path.toAbsolutePath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (Exception e) {
+            try {
+                Files.deleteIfExists(temp);
+            } catch (Exception ignored) {
+            }
+            throw new IllegalArgumentException("Failed to write file: " + path + " (" + e.getMessage() + ")");
         }
     }
 
@@ -122,5 +163,13 @@ public final class CliSupport {
 
     public static <T> T requireNonNull(T value, String field) {
         return Objects.requireNonNull(value, field + " must not be null");
+    }
+
+    public static String currentActor() {
+        String override = System.getenv("GPUM_ACTOR");
+        if (override != null && !override.isBlank()) {
+            return override.trim();
+        }
+        return System.getProperty("user.name", "unknown");
     }
 }

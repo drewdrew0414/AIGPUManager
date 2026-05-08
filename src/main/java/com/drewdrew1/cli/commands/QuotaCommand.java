@@ -86,6 +86,12 @@ public class QuotaCommand implements Runnable {
             if (maxGpus != null) CliSupport.requirePositive(maxGpus, "max-gpus");
             if (maxVram != null) CliSupport.requirePositiveLong(maxVram, "max-vram");
             if (maxLeaseHours != null) CliSupport.requirePositive(maxLeaseHours, "max-lease-hours");
+            quotaCommand.parent.createContext().accessControlService().requireRole(
+                    CliSupport.currentActor(),
+                    com.drewdrew1.core.model.RbacRole.ADMIN,
+                    null,
+                    "ADMIN role is required to change quota policies."
+            );
             quotaCommand.parent.createContext().governanceService()
                     .saveQuotaPolicy(name, maxGpus, maxVram, maxLeaseHours, burstAllow);
             System.out.printf("Quota policy saved for %s%n", name);
@@ -104,6 +110,12 @@ public class QuotaCommand implements Runnable {
                 CliSupport.require(threshold == 80 || threshold == 90, "Only 80 and 90 percent thresholds are supported");
                 values.add(threshold);
             }
+            quotaCommand.parent.createContext().accessControlService().requireRole(
+                    CliSupport.currentActor(),
+                    com.drewdrew1.core.model.RbacRole.ADMIN,
+                    null,
+                    "ADMIN role is required to configure quota alerts."
+            );
             quotaCommand.parent.createContext().governanceService().saveQuotaAlerts(name, values);
             QuotaAlertPolicy policy = quotaCommand.parent.createContext().governanceService().quotaAlertPolicy(name)
                     .orElseThrow(() -> new IllegalStateException("Quota alerts were not persisted for " + name));

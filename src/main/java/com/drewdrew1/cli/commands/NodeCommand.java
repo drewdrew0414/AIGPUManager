@@ -89,12 +89,14 @@ public class NodeCommand implements Runnable {
             CliSupport.requireRange(discoveryDepth, 1, 2, "discovery-depth");
             if (all) {
                 int scanned = 0;
-                ScanSummary local = nodeCommand.context().inventoryService().scanLocalNode();
-                nodeCommand.context().inventoryRepository()
-                        .putNodeAttribute(local.node().hostname(), "scan.discovery_depth", Integer.toString(discoveryDepth));
-                nodeCommand.context().auditService().log("NODE_SCAN", actor(), local.node().hostname(), "local scan");
-                nodeCommand.context().logService().info("node", "scan", "Scanned local node", local.node().hostname());
-                scanned++;
+                if (force || !recentlyScanned(nodeCommand, nodeCommand.context().systemInfoService().localNodeInventory().hostname())) {
+                    ScanSummary local = nodeCommand.context().inventoryService().scanLocalNode();
+                    nodeCommand.context().inventoryRepository()
+                            .putNodeAttribute(local.node().hostname(), "scan.discovery_depth", Integer.toString(discoveryDepth));
+                    nodeCommand.context().auditService().log("NODE_SCAN", actor(), local.node().hostname(), "local scan");
+                    nodeCommand.context().logService().info("node", "scan", "Scanned local node", local.node().hostname());
+                    scanned++;
+                }
                 for (RemoteNodeRegistration registration : nodeCommand.context().inventoryRepository().listRemoteNodes()) {
                     if (!registration.enabled()) {
                         continue;
@@ -129,6 +131,13 @@ public class NodeCommand implements Runnable {
                 return 0;
             }
 
+            String localHostname = nodeCommand.context().systemInfoService().localNodeInventory().hostname();
+            if (!force && recentlyScanned(nodeCommand, localHostname)) {
+                System.out.printf("Scan skipped for %s: cached inventory is newer than %d second(s). Use --force to refresh.%n",
+                        localHostname,
+                        nodeCommand.context().config().getMonitoring().getScanMinIntervalSec());
+                return 0;
+            }
             ScanSummary summary = nodeCommand.context().inventoryService().scanLocalNode();
             if (force) {
                 nodeCommand.context().inventoryRepository()
@@ -302,6 +311,12 @@ public class NodeCommand implements Runnable {
         @Override
         public Integer call() {
             CliSupport.requireRange(timeoutMin, 1, 10_080, "timeout");
+            nodeCommand.context().accessControlService().requireRole(
+                    CliSupport.currentActor(),
+                    com.drewdrew1.core.model.RbacRole.OPERATOR,
+                    null,
+                    "OPERATOR role is required to drain nodes."
+            );
             String resolvedHost = resolveExistingHost(nodeCommand, host);
             nodeCommand.context().inventoryRepository().putNodeAttribute(resolvedHost, "state.drained", "true");
             nodeCommand.context().inventoryRepository().putNodeAttribute(resolvedHost, "state.drained.graceful", Boolean.toString(graceful));
@@ -354,6 +369,12 @@ public class NodeCommand implements Runnable {
 
         @Override
         public Integer call() {
+            nodeCommand.context().accessControlService().requireRole(
+                    CliSupport.currentActor(),
+                    com.drewdrew1.core.model.RbacRole.OPERATOR,
+                    null,
+                    "OPERATOR role is required to undrain nodes."
+            );
             String resolvedHost = resolveExistingHost(nodeCommand, host);
             nodeCommand.context().inventoryRepository().removeNodeAttribute(resolvedHost, "state.drained");
             nodeCommand.context().inventoryRepository().removeNodeAttribute(resolvedHost, "state.drained.graceful");
@@ -449,6 +470,12 @@ public class NodeCommand implements Runnable {
         @Override
         public Integer call() {
             CliSupport.require(!(on && off), "Choose either --on or --off");
+            nodeCommand.context().accessControlService().requireRole(
+                    CliSupport.currentActor(),
+                    com.drewdrew1.core.model.RbacRole.OPERATOR,
+                    null,
+                    "OPERATOR role is required to toggle maintenance mode."
+            );
             String resolvedHost = resolveExistingHost(nodeCommand, host);
             boolean enabled = !off;
             if (enabled) {
@@ -492,6 +519,12 @@ public class NodeCommand implements Runnable {
                 System.out.printf("Labels on %s: %s%n", resolvedHost, renderLabels(attrs));
                 return 0;
             }
+            nodeCommand.context().accessControlService().requireRole(
+                    CliSupport.currentActor(),
+                    com.drewdrew1.core.model.RbacRole.OPERATOR,
+                    null,
+                    "OPERATOR role is required to modify node labels."
+            );
             if (!setPairs.isEmpty()) {
                 Map<String, String> labels = CliSupport.parseLabels(setPairs);
                 for (Map.Entry<String, String> entry : labels.entrySet()) {
@@ -550,6 +583,12 @@ public class NodeCommand implements Runnable {
             public Integer call() {
                 CliSupport.requireNonBlank(ip, "ip");
                 CliSupport.requireNonBlank(sshUser, "ssh-user");
+                remoteCommand.nodeCommand.context().accessControlService().requireRole(
+                        CliSupport.currentActor(),
+                        com.drewdrew1.core.model.RbacRole.OPERATOR,
+                        null,
+                        "OPERATOR role is required to register remote nodes."
+                );
                 remoteCommand.nodeCommand.context().inventoryRepository()
                         .upsertRemoteNode(new RemoteNodeRegistration(ip, sshUser, alias, true, java.time.Instant.now()));
                 remoteCommand.nodeCommand.context().auditService().log("REMOTE_NODE_ADD", actor(), ip, "user=" + sshUser);
@@ -600,6 +639,12 @@ public class NodeCommand implements Runnable {
             @Override
             public Integer call() {
                 CliSupport.requireNonBlank(ip, "ip");
+                remoteCommand.nodeCommand.context().accessControlService().requireRole(
+                        CliSupport.currentActor(),
+                        com.drewdrew1.core.model.RbacRole.OPERATOR,
+                        null,
+                        "OPERATOR role is required to remove remote nodes."
+                );
                 remoteCommand.nodeCommand.context().inventoryRepository().removeRemoteNode(ip);
                 remoteCommand.nodeCommand.context().auditService().log("REMOTE_NODE_REMOVE", actor(), ip, "removed registration");
                 remoteCommand.nodeCommand.context().logService().info("node", "remote", "Removed remote node", ip);
@@ -610,7 +655,7 @@ public class NodeCommand implements Runnable {
     }
 
     private static String actor() {
-        return System.getProperty("user.name", "unknown");
+        return CliSupport.currentActor();
     }
 
     private static String resolveExistingHost(NodeCommand command, String host) {
@@ -677,5 +722,15 @@ public class NodeCommand implements Runnable {
             case "disk" -> Comparator.comparing(NodeInventory::hostname);
             default -> Comparator.comparingInt(NodeInventory::cpuCores).reversed().thenComparing(NodeInventory::hostname);
         };
+    }
+
+    private static boolean recentlyScanned(NodeCommand command, String hostname) {
+        int minIntervalSec = Math.max(0, command.context().config().getMonitoring().getScanMinIntervalSec());
+        if (minIntervalSec == 0) {
+            return false;
+        }
+        Optional<NodeInventory> node = command.context().inventoryRepository().findNode(hostname);
+        return node.isPresent()
+                && java.time.Duration.between(node.get().lastScannedAt(), java.time.Instant.now()).getSeconds() < minIntervalSec;
     }
 }

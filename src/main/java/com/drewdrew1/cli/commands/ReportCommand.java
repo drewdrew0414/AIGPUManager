@@ -12,7 +12,6 @@ import picocli.CommandLine.Spec;
 import picocli.CommandLine.Model.CommandSpec;
 
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -27,7 +26,8 @@ import java.util.concurrent.Callable;
         description = "Reporting operations",
         subcommands = {
                 ReportCommand.UsageCommand.class,
-                ReportCommand.BillingCommand.class
+                ReportCommand.BillingCommand.class,
+                ReportCommand.PrometheusCommand.class
         }
 )
 public class ReportCommand implements Runnable {
@@ -54,7 +54,7 @@ public class ReportCommand implements Runnable {
         }
     }
 
-    @Command(name = "billing", description = "Generate billing simulation")
+    @Command(name = "billing", description = "Generate billing simulation report")
     static class BillingCommand implements Callable<Integer> {
         @ParentCommand private ReportCommand reportCommand;
         @Option(names = "--rate-card", required = true) private String rateCard;
@@ -62,6 +62,23 @@ public class ReportCommand implements Runnable {
             CliSupport.requireNonBlank(rateCard, "rate-card");
             List<UsageReportRow> rows = reportCommand.parent.createContext().governanceService().billingReport(Path.of(rateCard));
             printTable(rows, true);
+            return 0;
+        }
+    }
+
+    @Command(name = "prometheus", description = "Export current inventory and allocation metrics in Prometheus text format")
+    static class PrometheusCommand implements Callable<Integer> {
+        @ParentCommand private ReportCommand reportCommand;
+        @Option(names = "--path") private Path path;
+
+        @Override public Integer call() {
+            String payload = reportCommand.parent.createContext().prometheusExportService().render();
+            if (path == null) {
+                System.out.print(payload);
+            } else {
+                CliSupport.writeStringAtomic(path, payload);
+                System.out.println("Wrote Prometheus metrics to " + path.toAbsolutePath());
+            }
             return 0;
         }
     }
@@ -104,7 +121,7 @@ public class ReportCommand implements Runnable {
         }
         String text = String.join("\n", lines).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)");
         byte[] content = minimalPdf(text).getBytes(StandardCharsets.US_ASCII);
-        Files.write(path, content);
+        CliSupport.writeBytesAtomic(path, content);
         System.out.println("Wrote PDF report to " + path.toAbsolutePath());
     }
 

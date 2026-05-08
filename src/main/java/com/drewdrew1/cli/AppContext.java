@@ -7,16 +7,28 @@ import com.drewdrew1.core.repository.AllocationRepository;
 import com.drewdrew1.core.repository.GovernanceRepository;
 import com.drewdrew1.core.repository.InventoryRepository;
 import com.drewdrew1.core.repository.LogRepository;
+import com.drewdrew1.core.repository.RuntimeRepository;
 import com.drewdrew1.core.service.AllocationService;
+import com.drewdrew1.core.service.AccessControlService;
 import com.drewdrew1.core.service.AuditService;
 import com.drewdrew1.core.service.CapabilityResolver;
+import com.drewdrew1.core.service.ContainerReconcileService;
 import com.drewdrew1.core.service.GovernanceService;
+import com.drewdrew1.core.service.GpuControlService;
+import com.drewdrew1.core.service.GpuProcessService;
+import com.drewdrew1.core.service.HealthScoringService;
 import com.drewdrew1.core.service.IntegrationService;
 import com.drewdrew1.core.service.InventoryService;
 import com.drewdrew1.core.service.LogService;
+import com.drewdrew1.core.service.NativeGpuTelemetryService;
 import com.drewdrew1.core.service.NodeInfoProvider;
+import com.drewdrew1.core.service.PartitionControlService;
+import com.drewdrew1.core.service.PrometheusExportService;
+import com.drewdrew1.core.service.RemoteGpuControlService;
 import com.drewdrew1.core.service.RemoteSystemInfoService;
+import com.drewdrew1.core.service.RuntimeWorkerService;
 import com.drewdrew1.core.service.SystemInfoService;
+import com.drewdrew1.core.service.WorkloadProfileService;
 import com.drewdrew1.infra.detector.AmdDetector;
 import com.drewdrew1.infra.detector.IntelDetector;
 import com.drewdrew1.infra.detector.NvidiaDetector;
@@ -29,6 +41,7 @@ import com.drewdrew1.infra.persistence.SqliteAuditRepository;
 import com.drewdrew1.infra.persistence.SqliteGovernanceRepository;
 import com.drewdrew1.infra.persistence.SqliteInventoryRepository;
 import com.drewdrew1.infra.persistence.SqliteLogRepository;
+import com.drewdrew1.infra.persistence.SqliteRuntimeRepository;
 
 import java.nio.file.Path;
 import java.time.Duration;
@@ -44,6 +57,7 @@ public class AppContext {
     private AuditRepository auditRepository;
     private GovernanceRepository governanceRepository;
     private LogRepository logRepository;
+    private RuntimeRepository runtimeRepository;
     private TablePrinter tablePrinter;
     private SystemInfoService systemInfoService;
     private CommandExecutor localCommandExecutor;
@@ -52,6 +66,17 @@ public class AppContext {
     private LogService logService;
     private IntegrationService integrationService;
     private GovernanceService governanceService;
+    private GpuControlService gpuControlService;
+    private AccessControlService accessControlService;
+    private GpuProcessService gpuProcessService;
+    private RemoteGpuControlService remoteGpuControlService;
+    private PartitionControlService partitionControlService;
+    private HealthScoringService healthScoringService;
+    private PrometheusExportService prometheusExportService;
+    private WorkloadProfileService workloadProfileService;
+    private NativeGpuTelemetryService nativeGpuTelemetryService;
+    private RuntimeWorkerService runtimeWorkerService;
+    private ContainerReconcileService containerReconcileService;
 
     public AppContext(Path dbPath, Duration commandTimeout, GpumConfig config) {
         this.dbPath = dbPath;
@@ -130,6 +155,13 @@ public class AppContext {
         return logRepository;
     }
 
+    public RuntimeRepository runtimeRepository() {
+        if (runtimeRepository == null) {
+            runtimeRepository = new SqliteRuntimeRepository(dbPath);
+        }
+        return runtimeRepository;
+    }
+
     public LogService logService() {
         if (logService == null) {
             logService = new LogService(logRepository());
@@ -184,5 +216,104 @@ public class AppContext {
             governanceService = new GovernanceService(governanceRepository(), inventoryRepository(), allocationRepository());
         }
         return governanceService;
+    }
+
+    public GpuControlService gpuControlService() {
+        if (gpuControlService == null) {
+            gpuControlService = new GpuControlService(
+                    commandExecutor(),
+                    inventoryRepository(),
+                    allocationRepository(),
+                    systemInfoService(),
+                    config
+            );
+        }
+        return gpuControlService;
+    }
+
+    public AccessControlService accessControlService() {
+        if (accessControlService == null) {
+            accessControlService = new AccessControlService(governanceRepository());
+        }
+        return accessControlService;
+    }
+
+    public GpuProcessService gpuProcessService() {
+        if (gpuProcessService == null) {
+            gpuProcessService = new GpuProcessService(commandExecutor(), config, systemInfoService());
+        }
+        return gpuProcessService;
+    }
+
+    public RemoteGpuControlService remoteGpuControlService() {
+        if (remoteGpuControlService == null) {
+            remoteGpuControlService = new RemoteGpuControlService(
+                    inventoryRepository(),
+                    config,
+                    this::sshCommandExecutor
+            );
+        }
+        return remoteGpuControlService;
+    }
+
+    public PartitionControlService partitionControlService() {
+        if (partitionControlService == null) {
+            partitionControlService = new PartitionControlService(
+                    governanceRepository(),
+                    inventoryRepository(),
+                    allocationRepository(),
+                    commandExecutor(),
+                    systemInfoService(),
+                    gpuProcessService(),
+                    config
+            );
+        }
+        return partitionControlService;
+    }
+
+    public HealthScoringService healthScoringService() {
+        if (healthScoringService == null) {
+            healthScoringService = new HealthScoringService(inventoryRepository(), config.getMonitoring());
+        }
+        return healthScoringService;
+    }
+
+    public PrometheusExportService prometheusExportService() {
+        if (prometheusExportService == null) {
+            prometheusExportService = new PrometheusExportService(
+                    inventoryRepository(),
+                    allocationRepository(),
+                    healthScoringService()
+            );
+        }
+        return prometheusExportService;
+    }
+
+    public WorkloadProfileService workloadProfileService() {
+        if (workloadProfileService == null) {
+            workloadProfileService = new WorkloadProfileService();
+        }
+        return workloadProfileService;
+    }
+
+    public NativeGpuTelemetryService nativeGpuTelemetryService() {
+        if (nativeGpuTelemetryService == null) {
+            nativeGpuTelemetryService = new NativeGpuTelemetryService();
+        }
+        return nativeGpuTelemetryService;
+    }
+
+    public RuntimeWorkerService runtimeWorkerService() {
+        if (runtimeWorkerService == null) {
+            runtimeWorkerService = new RuntimeWorkerService(runtimeRepository(), allocationRepository());
+        }
+        return runtimeWorkerService;
+    }
+
+    public ContainerReconcileService containerReconcileService() {
+        if (containerReconcileService == null) {
+            containerReconcileService = new ContainerReconcileService(commandExecutor(), allocationRepository(), config);
+        }
+        return containerReconcileService;
     }
 }

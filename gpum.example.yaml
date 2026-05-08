@@ -4,12 +4,14 @@ tools:
   rocmSmi: rocm-smi
   xpuSmi: xpu-smi
   ssh: ssh
+  docker: docker
   kubectl: kubectl
   mlflow: mlflow
   bentoml: bentoml
   powershell: powershell
   cmd: cmd
   bash: bash
+  gpumAgentCommand: gpum
 
 kubernetes:
   enabled: true
@@ -17,6 +19,7 @@ kubernetes:
   namespace: default
   serviceAccount: default
   imagePullPolicy: IfNotPresent
+  gpuResourceKey:
 
 mlflow:
   enabled: true
@@ -30,6 +33,12 @@ bentoml:
   endpoint:
   home:
   workingDirectory:
+
+monitoring:
+  scanMinIntervalSec: 5
+  quarantineScoreThreshold: 40.0
+  thermalWarnC: 75.0
+  thermalCriticalC: 85.0
 
 externalTools:
   ray:

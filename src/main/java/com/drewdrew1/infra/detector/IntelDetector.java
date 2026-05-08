@@ -21,6 +21,8 @@ import java.util.Map;
 
 /** Detects Intel GPU inventory by parsing xpu-smi style output. */
 public class IntelDetector implements GpuDetector {
+    private static final long WINDOWS_INTEGRATED_SHARED_MEMORY_DIVISOR = 2L;
+
     private final CommandExecutor commandExecutor;
     private final CapabilityResolver capabilityResolver;
     private final String xpuSmiCommand;
@@ -143,6 +145,15 @@ public class IntelDetector implements GpuDetector {
             Long totalMb = toMb(attributes, "memory_physical_size");
             Long usedMb = toMb(attributes, "gpu_memory_used");
             Long freeMb = totalMb != null && usedMb != null ? Math.max(totalMb - usedMb, 0L) : null;
+            boolean integratedGraphics = isIntegratedIntelModel(model);
+            boolean sharedSystemMemory = integratedGraphics || DetectorSupport.hasAnyKey(attributes, "shared_memory");
+            Long sharedMemoryTotalMb = sharedSystemMemory
+                    ? firstPresentMb(attributes,
+                    "shared_memory_size",
+                    "shared_memory_total",
+                    "shared_system_memory",
+                    "system_memory")
+                    : null;
 
             devices.add(new GpuDevice(
                     hostname,
@@ -154,14 +165,21 @@ public class IntelDetector implements GpuDetector {
                     DetectorSupport.firstValue(attributes, "driver_version"),
                     totalMb,
                     freeMb,
-                    asDouble(attributes, "gpu_utilization"),
-                    asDouble(attributes, "gpu_memory_util"),
+                    resolveIntelGpuUtilization(attributes),
+                    asDouble(attributes,
+                            "gpu_memory_util",
+                            "memory_utilization",
+                            "memory_bandwidth_utilization",
+                            "device_memory_utilization"),
                     asDouble(attributes, "gpu_core_temperature", "temperature"),
                     asDouble(attributes, "gpu_power", "power"),
                     null,
                     capabilityResolver.resolveEccEnabled(attributes),
                     capabilityResolver.resolveIntelInterconnect(attributes),
                     capabilityResolver.resolveHealthState(attributes),
+                    integratedGraphics,
+                    sharedSystemMemory,
+                    sharedMemoryTotalMb,
                     false,
                     DetectorSupport.hasAnyKey(attributes, "tile", "vgpu"),
                     true,
@@ -175,16 +193,18 @@ public class IntelDetector implements GpuDetector {
     private List<GpuDevice> parseWindowsDisplayAdapters(String hostname, Instant scannedAt, String json) {
         try {
             JsonNode root = DetectorSupport.OBJECT_MAPPER.readTree(json);
+            Double hostGpuUtilization = readWindowsGpuEngineUtilization();
+            Long nodeMemoryTotalMb = readWindowsPhysicalMemoryMb();
             List<GpuDevice> devices = new ArrayList<>();
             if (root == null || root.isNull()) {
                 return devices;
             }
             if (root.isArray()) {
                 for (JsonNode node : root) {
-                    addWindowsDisplayAdapter(devices, hostname, scannedAt, node, devices.size());
+                    addWindowsDisplayAdapter(devices, hostname, scannedAt, node, devices.size(), hostGpuUtilization, nodeMemoryTotalMb);
                 }
             } else if (root.isObject()) {
-                addWindowsDisplayAdapter(devices, hostname, scannedAt, root, 0);
+                addWindowsDisplayAdapter(devices, hostname, scannedAt, root, 0, hostGpuUtilization, nodeMemoryTotalMb);
             }
             return devices;
         } catch (Exception e) {
@@ -192,12 +212,25 @@ public class IntelDetector implements GpuDetector {
         }
     }
 
-    private void addWindowsDisplayAdapter(List<GpuDevice> devices, String hostname, Instant scannedAt, JsonNode node, int index) {
+    private void addWindowsDisplayAdapter(
+            List<GpuDevice> devices,
+            String hostname,
+            Instant scannedAt,
+            JsonNode node,
+            int index,
+            Double hostGpuUtilization,
+            Long nodeMemoryTotalMb
+    ) {
         String model = text(node, "Name");
         if (!matchesIntelAcceleratorModel(model)) {
             return;
         }
         Long adapterRamMb = bytesToMb(text(node, "AdapterRAM"));
+        boolean integratedGraphics = isIntegratedIntelModel(model);
+        boolean sharedSystemMemory = integratedGraphics || adapterRamMb == null || adapterRamMb <= 512L;
+        Long sharedMemoryTotalMb = sharedSystemMemory && nodeMemoryTotalMb != null
+                ? Math.max((nodeMemoryTotalMb - 4096L) / WINDOWS_INTEGRATED_SHARED_MEMORY_DIVISOR, 0L)
+                : null;
         devices.add(new GpuDevice(
                 hostname,
                 GpuVendor.INTEL,
@@ -208,7 +241,7 @@ public class IntelDetector implements GpuDetector {
                 DetectorSupport.blankToNull(text(node, "DriverVersion")),
                 adapterRamMb,
                 null,
-                null,
+                hostGpuUtilization,
                 null,
                 null,
                 null,
@@ -216,6 +249,9 @@ public class IntelDetector implements GpuDetector {
                 null,
                 InterconnectType.PCIE,
                 HealthState.UNKNOWN,
+                integratedGraphics,
+                sharedSystemMemory,
+                sharedMemoryTotalMb,
                 false,
                 false,
                 true,
@@ -239,6 +275,19 @@ public class IntelDetector implements GpuDetector {
                 || normalized.contains("iris xe max");
     }
 
+    private boolean isIntegratedIntelModel(String model) {
+        if (model == null) {
+            return false;
+        }
+        String normalized = model.toLowerCase();
+        return normalized.contains("140v")
+                || normalized.contains("130v")
+                || normalized.contains("arc graphics")
+                || normalized.contains("integrated")
+                || normalized.contains("iris xe")
+                || normalized.contains("uhd graphics");
+    }
+
     private static String text(JsonNode node, String field) {
         JsonNode value = node.get(field);
         return value == null || value.isNull() ? null : value.asText();
@@ -247,6 +296,65 @@ public class IntelDetector implements GpuDetector {
     private static Long bytesToMb(String raw) {
         Long bytes = DetectorSupport.parseLongValue(raw);
         return bytes == null ? null : bytes / (1024 * 1024);
+    }
+
+    private Double readWindowsGpuEngineUtilization() {
+        try {
+            CommandResult result = commandExecutor.execute(List.of(
+                    powershellCommand,
+                    "-NoProfile",
+                    "-Command",
+                    "$samples = (Get-Counter '\\GPU Engine(*)\\Utilization Percentage').CounterSamples; " +
+                            "$value = ($samples | Where-Object { $_.InstanceName -notmatch 'engtype_copy' } | " +
+                            "Measure-Object -Property CookedValue -Sum).Sum; " +
+                            "if ($null -eq $value) { '' } else { [math]::Round([double]$value, 2) }"
+            ));
+            if (!result.isSuccess()) {
+                return null;
+            }
+            return DetectorSupport.parseDoubleValue(result.stdout());
+        } catch (CommandExecutionException e) {
+            return null;
+        }
+    }
+
+    private Long readWindowsPhysicalMemoryMb() {
+        try {
+            CommandResult result = commandExecutor.execute(List.of(
+                    powershellCommand,
+                    "-NoProfile",
+                    "-Command",
+                    "[math]::Round(((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1MB), 0)"
+            ));
+            if (!result.isSuccess()) {
+                return null;
+            }
+            return DetectorSupport.parseLongValue(result.stdout());
+        } catch (CommandExecutionException e) {
+            return null;
+        }
+    }
+
+    private static Double resolveIntelGpuUtilization(Map<String, String> attributes) {
+        return asDouble(attributes,
+                "gpu_utilization",
+                "gpu_util",
+                "gpu_busy",
+                "device_utilization",
+                "compute_utilization",
+                "compute_engine_utilization",
+                "render_compute_utilization",
+                "engine_utilization");
+    }
+
+    private static Long firstPresentMb(Map<String, String> attributes, String... fragments) {
+        for (String fragment : fragments) {
+            Long value = toMb(attributes, fragment);
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private static boolean isWindows() {

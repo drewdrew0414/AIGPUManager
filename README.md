@@ -21,13 +21,17 @@ GPU inventory, allocation, audit, and operations CLI for AI training and inferen
 - [English](#english)
   - [Overview](#en-overview)
   - [Current Scope](#en-current-scope)
+  - [Safety Interlocks](#en-safety-interlocks)
   - [Installation](#en-installation)
   - [Quick Start](#en-quick-start)
   - [Command Groups](#en-command-groups)
+  - [Runtime Layer](#en-runtime-layer)
+  - [AI Tooling Integration](#en-ai-tooling-integration)
   - [Supported GPU Families](#en-supported-gpu-families)
   - [Configuration](#en-configuration)
   - [SQLite, Audit, and Logs](#en-sqlite-audit-and-logs)
   - [Testing Without GPUs](#en-testing-without-gpus)
+  - [Practical Gaps](#en-practical-gaps)
   - [Known Limits](#en-known-limits)
 - [한국어](#korean)
   - [개요](#ko-overview)
@@ -84,13 +88,88 @@ Working and validated:
 - queue / quota / partition record / usage report / billing simulation
 - SQLite audit and operational logs
 - Windows and Linux launchers
+- guarded hardware write paths for selected `gpu set` / `gpu reset` operations
+- allocation-scoped AI launcher environment for `python`, `torchrun`, `accelerate`, `deepspeed`, and `vllm`
+- scan rate limiting to reduce subprocess flooding
+- topology-aware packed/spread placement using NVLink, XGMI, and Xe Link hints
+- health scoring and scheduler quarantine flags
+- Prometheus text export for inventory, allocation, and health metrics
+- heuristic VRAM estimation for AI workload requests
+- optional direct NVML / Level Zero telemetry through JNA when native libraries are installed
+- SQLite-backed runtime worker registry, restart budget, recycle preview/execute, OOM recovery strategy hooks
+- Docker and Kubernetes reconcile checks for allocation visibility drift
+- checkpoint/restore migration planning for workers that provide explicit commands
 
-Implemented conservatively:
+Write support is intentionally guarded:
 
-- `gpu set`
-- `gpu reset`
+- `gpu set --apply`
+  - NVIDIA: power limit, compute mode, ECC
+  - AMD: power cap
+  - Intel: power limit, ECC
+- `gpu reset --apply`
+  - guarded soft reset path only
 
-These commands validate input, check inventory, and record the request safely, but they do not force vendor-level hardware mutation yet.
+Blocked on purpose:
+
+- hard reset
+- unsafe clock fixing
+- integrated GPU reset
+- write against non-local GPUs
+- write against GPUs with active allocations, unless explicitly overridden where supported
+
+<a id="en-safety-interlocks"></a>
+### Safety Interlocks
+
+`gpum` now treats hardware mutation as opt-in only.
+
+Default behavior:
+
+- `gpu set` without `--apply` is a dry-run preview
+- `gpu reset` without `--apply` is a dry-run preview
+- the CLI prints planned vendor commands, blockers, and required safety conditions
+
+To allow a real hardware write:
+
+```bash
+export GPUM_ENABLE_HARDWARE_WRITE=1
+gpum gpu set --id <node>:<gpu-id> --power-limit 350 --apply
+```
+
+Windows:
+
+```bat
+set GPUM_ENABLE_HARDWARE_WRITE=1
+gpum gpu reset --id <node>:<gpu-id> --soft --apply
+```
+
+Additional guards:
+
+- local node only
+- allocation ownership conflict check
+- reboot-required guard for ECC changes
+- linked-fabric reset guard
+- vendor min/max power limit revalidation at apply time
+- remote apply is allowed only through a recorded SSH target and remote `gpum` agent path
+- high-risk `gpu set --apply`, `gpu reset --apply`, `part create --apply`, and `part destroy --apply` create approval requests unless the actor already has the required approval role
+- `alloc release --kill-process` performs real local process cleanup with PID safety checks and same-user preference unless forced
+- MIG apply is limited to NVIDIA devices that already advertise MIG capability; automatic mode enable is still intentionally blocked
+- runtime worker commands only manage workers registered in `gpum`; migration execution requires explicit checkpoint and restore commands
+- Docker/K8s reconcile commands are read-only and report drift instead of mutating containers or pods
+
+Approval flow example:
+
+```bash
+gpum gpu reset --id <node>:<gpu-id> --soft --apply
+gpum rbac approval list --status pending
+gpum rbac approval approve --id <approval-id> --reason "change window approved"
+gpum gpu reset --id <node>:<gpu-id> --soft --apply --approval-id <approval-id>
+```
+
+Remote agent apply example:
+
+```bash
+gpum gpu set --id <remote-node>:<gpu-id> --power-limit 320 --via-agent --apply --approval-id <approval-id>
+```
 
 <a id="en-installation"></a>
 ### Installation
@@ -227,9 +306,16 @@ gpum node remote list
 - `gpum gpu stats --export csv`
 - `gpum gpu stats --export influxdb`
 - `gpum gpu health --check-ecc --thermal-test --memory-test --report`
+- `gpum gpu health --score`
+- `gpum gpu health --score --quarantine-threshold 40`
 - `gpum gpu topology --visualize`
 - `gpum gpu set --id <gpu-id> --power-limit 250`
 - `gpum gpu reset --id <gpu-id> --soft`
+- `gpum gpu set --id <node>:<gpu-id> --power-limit 300`
+- `gpum gpu set --id <node>:<gpu-id> --power-limit 300 --apply`
+- `gpum gpu set --id <node>:<gpu-id> --ecc on --allow-reboot-required`
+- `gpum gpu reset --id <node>:<gpu-id> --soft`
+- `gpum gpu reset --id <node>:<gpu-id> --soft --apply`
 
 #### `alloc`
 
@@ -241,12 +327,15 @@ gpum node remote list
 - `gpum alloc release --id <allocation-id>`
 - `gpum alloc move --id <allocation-id> --to-node <node>`
 - `gpum alloc reap`
+- `gpum alloc estimate --model <model-name> --params-b <n> --precision fp16 --context <tokens> --batch <n>`
 
 #### `part`
 
 - `gpum part create --gpu <node>:<gpu-id> --profile <profile> --count 1`
+- `gpum part create --gpu <node>:<gpu-id> --profile <profile> --count 1 --apply --approval-id <approval-id>`
 - `gpum part list`
 - `gpum part destroy --id <partition-id>`
+- `gpum part destroy --id <partition-id> --apply --approval-id <approval-id>`
 - `gpum part auto-optimize`
 
 #### `queue`
@@ -276,15 +365,172 @@ gpum node remote list
 
 - `gpum report usage --format json --by model`
 - `gpum report billing --rate-card <rate-card-file>`
+- `gpum report prometheus`
+- `gpum report prometheus --path <metrics-file>`
 
 #### `integration`
 
 - `gpum integration k8s contexts`
 - `gpum integration k8s pods`
+- `gpum integration k8s submit --name <job-name> --image <image> --allocation-id <allocation-id>`
+- `gpum integration k8s submit --name <job-name> --image <image> --allocation-id <allocation-id> --kind <Job|CronJob|Deployment>`
+- `gpum integration k8s submit --name <job-name> --template <template-file> --allocation-id <allocation-id>`
+- `gpum integration k8s submit --name <job-name> --image <image> --dataset-pvc <claim> --secret-env API_KEY=<secret>:key`
+- `gpum integration k8s submit --name <job-name> --image <image> --allocation-id <allocation-id> --execute`
 - `gpum integration mlflow status`
 - `gpum integration mlflow runs`
 - `gpum integration bentoml list`
+- `gpum integration ai env --allocation-id <allocation-id>`
+- `gpum integration ai env --allocation-id <allocation-id> --format json`
+- `gpum integration ai launch --allocation-id <allocation-id> --tool torchrun --from-file <template-file>`
+- `gpum integration ai launch --allocation-id <allocation-id> --tool torchrun --via-ssh --ssh-user <ssh-user>`
+- `gpum integration ai preset list`
+- `gpum integration ai preset render --allocation-id <allocation-id> --name torchrun-ddp --entrypoint train.py`
+- `gpum integration ai preset render --allocation-id <allocation-id> --name slurm-sbatch --entrypoint train.py`
+- `gpum integration ai preset render --allocation-id <allocation-id> --name ray-job --entrypoint train.py`
+- `gpum integration ai launch --allocation-id <allocation-id> --tool torchrun --arg --nnodes --arg 1 --arg train.py`
+- `gpum integration ai launch --allocation-id <allocation-id> --tool accelerate --arg launch --arg train.py --execute`
 - `gpum integration tool --name custom`
+
+<a id="en-runtime-layer"></a>
+### Runtime Layer
+
+`gpum runtime` adds the worker/runtime layer needed for safer AI workload operations without requiring expensive hardware in development.
+
+Native telemetry:
+
+- `gpum runtime native metrics`
+- Uses NVML for NVIDIA when `nvml` is available.
+- Uses Level Zero discovery for Intel when `ze_loader` is available.
+- Falls back to clear `unavailable` rows instead of failing the command when native libraries are missing.
+
+Worker lifecycle:
+
+- `gpum runtime worker register --id <worker-id> --allocation-id <allocation-id> --command "python train.py"`
+- `gpum runtime worker register --id <worker-id> --allocation-id <allocation-id> --command "python train.py" --oom-recovery-command "python defrag.py"`
+- `gpum runtime worker list`
+- `gpum runtime worker start --id <worker-id>`
+- `gpum runtime worker stop --id <worker-id>`
+- `gpum runtime worker stop --id <worker-id> --force`
+- `gpum runtime worker restart --id <worker-id> --reason oom`
+- `gpum runtime worker recycle`
+- `gpum runtime worker recycle --execute`
+- `gpum runtime worker events --id <worker-id>`
+- `gpum runtime daemon run --once`
+- `gpum runtime daemon run --interval-sec 30 --execute`
+
+OOM recovery:
+
+- `gpum runtime oom handle --allocation-id <allocation-id> --strategy restart`
+- `gpum runtime oom handle --allocation-id <allocation-id> --strategy defrag --execute`
+- `gpum runtime oom handle --allocation-id <allocation-id> --strategy stop --execute`
+- `gpum runtime oom handle --allocation-id <allocation-id> --strategy release --execute`
+
+Container/orchestrator reconcile:
+
+- `gpum runtime reconcile docker`
+- `gpum runtime reconcile k8s`
+
+Checkpoint migration:
+
+- `gpum runtime worker register --id <worker-id> --command "python train.py" --checkpoint-command "python save_ckpt.py" --restore-command "python restore_ckpt.py"`
+- `gpum runtime migrate plan --worker-id <worker-id> --to-node <node>`
+- `gpum runtime migrate plan --worker-id <worker-id> --to-node <node> --execute`
+
+> [!WARNING]
+> `gpum` does not pretend that live GPU memory migration is universally possible. The executable migration path is checkpoint/restore based and only runs the commands you explicitly registered.
+
+<a id="en-ai-tooling-integration"></a>
+### AI Tooling Integration
+
+`gpum` can now bridge allocation state into common AI runtimes.
+
+Supported allocation-scoped launch targets:
+
+- `python`
+- `torchrun`
+- `accelerate`
+- `deepspeed`
+- `vllm`
+
+Preset generators:
+
+- `torchrun-ddp`
+- `accelerate`
+- `deepspeed`
+- `vllm-serve`
+- `slurm-sbatch`
+- `ray-job`
+
+What it injects automatically:
+
+- `GPUM_ALLOCATION_ID`
+- `GPUM_PRIMARY_NODE`
+- `GPUM_GPU_COUNT`
+- `GPUM_GPU_MODELS`
+- `GPUM_GPU_UUIDS`
+- vendor-specific visibility variables
+  - NVIDIA: `CUDA_VISIBLE_DEVICES`, `NVIDIA_VISIBLE_DEVICES`
+  - AMD: `ROCR_VISIBLE_DEVICES`, `HIP_VISIBLE_DEVICES`
+  - Intel: `ZE_AFFINITY_MASK`, `ONEAPI_DEVICE_SELECTOR`
+- MLflow environment when configured
+  - `MLFLOW_TRACKING_URI`
+  - `MLFLOW_REGISTRY_URI`
+  - `MLFLOW_EXPERIMENT_NAME`
+
+This allows practical handoff from `alloc` to training or inference processes without manually reconstructing device visibility.
+
+Distributed launch behavior:
+
+- multi-node allocations now export:
+  - `GPUM_NODE_HOSTS`
+  - `GPUM_NODE_COUNT`
+  - `MASTER_ADDR`
+  - `GPUM_RDZV_ENDPOINT`
+- preset renderers use these values to produce torchrun / DeepSpeed / Accelerate launch arguments
+- `--via-ssh` launches the wrapped AI command on the allocation primary node through the configured `ssh` client
+
+Argument template support:
+
+- `--from-file <template-file>`
+- one rendered argument per line
+- blank lines and `#` comments are ignored
+- placeholders use `{{NAME}}`
+
+Typical placeholders:
+
+- `{{GPUM_ALLOCATION_ID}}`
+- `{{GPUM_PRIMARY_NODE}}`
+- `{{GPUM_GPU_COUNT}}`
+- `{{CUDA_VISIBLE_DEVICES}}`
+- `{{ZE_AFFINITY_MASK}}`
+
+Example template:
+
+```text
+--nproc-per-node
+{{GPUM_GPU_COUNT}}
+train.py
+--allocation-id
+{{GPUM_ALLOCATION_ID}}
+```
+
+Kubernetes submit behavior:
+
+- default mode prints the patched Job manifest
+- `--execute` applies it through `kubectl apply`
+- `--kind` supports `Job`, `CronJob`, and `Deployment`
+- `--template <template-file>` uses a user-provided YAML template before patching
+- when `--allocation-id` is present, `gpum` injects:
+  - allocation environment variables
+  - GPU limits and requests
+  - `gpum_allocation` label
+  - `kubernetes.io/hostname` pin to the allocation primary node
+- `--dataset-pvc` and `--mount-pvc` inject persistent volume mounts
+- `--secret-env` injects `secretKeyRef` environment variables
+- `--watch-sec`, `--retry`, and `--rollback-on-fail` provide conservative rollout control
+
+For non-NVIDIA clusters, set `kubernetes.gpuResourceKey` in config explicitly.
 
 #### `system`
 
@@ -328,6 +574,7 @@ Configurable areas:
   - `rocmSmi`
   - `xpuSmi`
   - `ssh`
+  - `docker`
   - `kubectl`
   - `mlflow`
   - `bentoml`
@@ -386,17 +633,37 @@ Validation strategy:
 - SQLite repository tests
 - allocation / governance flow tests
 
+<a id="en-practical-gaps"></a>
+### Practical Gaps
+
+Important production features still missing or partial:
+
+- allocator awareness of NUMA, NIC locality, and storage bandwidth
+- fair-share queue aging and true preemption
+- deeper scheduler integration with Slurm and Ray cluster state
+- richer preset coverage for ZeRO/offload/topology-specific launch tuning
+- GPU burn-in / memory test tooling beyond snapshot health heuristics
+- power/thermal policy profiles per tenant or workload class
+- remote hardware writes still depend on SSH reachability and a remote `gpum` install; a signed persistent daemon channel is still not included
+- MIG mode enable/disable is still intentionally manual; `gpum` only applies create/destroy within an already MIG-capable path
+- AMD and Intel partition lifecycle remains logical-only; hardware-backed partition apply currently targets NVIDIA MIG
+- process cleanup is local-node only and depends on vendor CLI process reporting
+- NVML/Level Zero support is intentionally minimal: it proves native access and basic NVIDIA metrics, while advanced Intel utilization counters still need deeper Level Zero metric streamer work
+- OOM recovery is policy-driven and worker-scoped; framework-level tensor defragmentation still needs framework adapters such as PyTorch/vLLM hooks
+- Docker and Kubernetes reconcile is read-only drift detection; device-plugin repair and cgroup mutation are not automatic
+- migration is checkpoint/restore based; transparent hot memory migration remains out of scope
+
 <a id="en-known-limits"></a>
 ### Known Limits
 
 Still conservative or partial:
 
-- vendor-level GPU power / clock / ECC mutation
-- true process cleanup on GPU release
-- real MIG partition lifecycle
+- vendor-level clock mutation is still blocked
+- forceful process cleanup is local and PID-scoped, not a cluster-wide kill service
+- real NVIDIA MIG apply exists only for already MIG-capable NVIDIA paths; AMD and Intel partitioning remains logical
 - cluster-grade preemption and queue scheduling
 - deep NIC / NUMA / RDMA inspection on every platform
-- Intel Windows fallback metrics beyond coarse inventory
+- Intel Windows fallback metrics beyond coarse inventory unless native Intel tooling is installed
 
 ---
 
@@ -682,6 +949,7 @@ gpum --config gpum.example.yaml system config
   - `rocmSmi`
   - `xpuSmi`
   - `ssh`
+  - `docker`
   - `kubectl`
   - `mlflow`
   - `bentoml`

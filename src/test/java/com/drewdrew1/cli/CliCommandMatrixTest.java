@@ -36,6 +36,9 @@ class CliCommandMatrixTest {
 
     @Test
     void executesNodeAndGpuCommandsAgainstFixtureInventory() {
+        String currentUser = System.getProperty("user.name", "unknown");
+        assertEquals(0, execute("rbac", "role", "grant", "--actor", currentUser, "--role", "admin").exitCode());
+        assertEquals(0, execute("rbac", "role", "grant", "--actor", currentUser, "--role", "operator").exitCode());
         CommandCapture nodeList = execute("node", "list", "--sort", "gpu");
         assertEquals(0, nodeList.exitCode());
         assertTrue(nodeList.stdout().contains("nvidia-h-pool"));
@@ -67,6 +70,7 @@ class CliCommandMatrixTest {
         assertEquals(0, execute("gpu", "stats", "--export", "csv").exitCode());
         assertTrue(Files.exists(tempDir.resolve("gpu-stats-export.csv")));
         assertEquals(0, execute("gpu", "health", "--check-ecc", "--thermal-test", "--memory-test", "--report").exitCode());
+        assertEquals(0, execute("gpu", "health", "--score", "--quarantine-threshold", "10").exitCode());
         assertEquals(0, execute("gpu", "set", "--id", "0", "--power-limit", "300").exitCode());
         assertEquals(0, execute("gpu", "reset", "--id", "0", "--soft", "--drain-first").exitCode());
         CommandCapture topology = execute("gpu", "topology", "--visualize");
@@ -76,6 +80,9 @@ class CliCommandMatrixTest {
 
     @Test
     void executesAllocationAuditAndSystemCommandsAgainstFixtureInventory() {
+        String currentUser = System.getProperty("user.name", "unknown");
+        assertEquals(0, execute("rbac", "role", "grant", "--actor", currentUser, "--role", "admin").exitCode());
+        assertEquals(0, execute("rbac", "role", "grant", "--actor", currentUser, "--role", "operator").exitCode());
         CommandCapture dryRun = execute("alloc", "request", "--gpus", "1", "--vram", "60000", "--hours", "2", "--label-selector", "role=trainer", "--dry-run");
         assertEquals(0, dryRun.exitCode());
         assertTrue(dryRun.stdout().contains("Dry-run allocation candidate"));
@@ -94,9 +101,22 @@ class CliCommandMatrixTest {
         CommandCapture info = execute("alloc", "info", "--id", record.id());
         assertEquals(0, info.exitCode());
         assertTrue(info.stdout().contains("Environment:"));
+        CommandCapture estimate = execute("alloc", "estimate", "--model", "llama", "--params-b", "7", "--precision", "fp16", "--context", "4096", "--batch", "1");
+        assertEquals(0, estimate.exitCode());
+        assertTrue(estimate.stdout().contains("Recommended VRAM MB"));
+        assertEquals(0, execute("integration", "ai", "env", "--allocation-id", record.id(), "--format", "json").exitCode());
+        assertEquals(0, execute("integration", "ai", "preset", "render", "--allocation-id", record.id(), "--name", "torchrun-ddp", "--entrypoint", "train.py").exitCode());
+        assertEquals(0, execute("integration", "k8s", "submit", "--name", "trainer", "--image", "repo/train:latest", "--allocation-id", record.id()).exitCode());
+        assertEquals(0, execute("runtime", "native", "metrics").exitCode());
+        assertEquals(0, execute("runtime", "worker", "register", "--id", "worker-matrix", "--allocation-id", record.id(), "--command", "echo ok",
+                "--checkpoint-command", "echo checkpoint", "--restore-command", "echo restore").exitCode());
+        assertEquals(0, execute("runtime", "worker", "list").exitCode());
+        assertEquals(0, execute("runtime", "worker", "events", "--id", "worker-matrix").exitCode());
+        assertEquals(0, execute("runtime", "migrate", "plan", "--worker-id", "worker-matrix", "--to-node", "amd-mi-pool").exitCode());
+        assertEquals(0, execute("runtime", "oom", "handle", "--allocation-id", record.id(), "--strategy", "restart").exitCode());
 
         assertEquals(0, execute("alloc", "extend", "--id", record.id(), "--hours", "2", "--reason", "integration-test").exitCode());
-        assertEquals(0, execute("alloc", "move", "--id", record.id(), "--to-node", "nvidia-h-pool").exitCode());
+        assertEquals(0, execute("alloc", "move", "--id", record.id(), "--to-node", "amd-mi-pool").exitCode());
         AllocationRecord movedRecord = allocationRepository.listActive().getFirst();
         assertEquals(0, execute("alloc", "release", "--id", movedRecord.id(), "--kill-process").exitCode());
         assertEquals(0, execute("alloc", "reap").exitCode());
@@ -136,6 +156,9 @@ class CliCommandMatrixTest {
     void executesGovernanceAndPartitionCommands() throws Exception {
         Path rateCard = tempDir.resolve("rate-card.yaml");
         Files.writeString(rateCard, "default_gpu_hour: 1.0\nmodels:\n  H100: 4.0\n", StandardCharsets.UTF_8);
+        String currentUser = System.getProperty("user.name", "unknown");
+        assertEquals(0, execute("rbac", "role", "grant", "--actor", currentUser, "--role", "admin").exitCode());
+        assertEquals(0, execute("rbac", "role", "grant", "--actor", currentUser, "--role", "operator").exitCode());
 
         CommandCapture partCreate = execute("part", "create", "--gpu", "nvidia-h-pool:0", "--profile", "1g.10gb", "--count", "1");
         assertEquals(0, partCreate.exitCode());
@@ -145,7 +168,7 @@ class CliCommandMatrixTest {
         assertEquals(0, execute("part", "destroy", "--id", partitionId).exitCode());
         assertEquals(0, execute("part", "auto-optimize").exitCode());
 
-        String currentUser = System.getProperty("user.name", "unknown");
+        assertEquals(0, execute("rbac", "whoami").exitCode());
         assertEquals(0, execute("quota", "set", "--name", currentUser, "--max-gpus", "1", "--max-vram", "320000", "--max-lease-hours", "72").exitCode());
         assertEquals(0, execute("quota", "alert", "--name", currentUser, "--threshold", "80,90").exitCode());
         assertEquals(0, execute("quota", "status", "--user", currentUser, "--remaining").exitCode());
@@ -162,6 +185,9 @@ class CliCommandMatrixTest {
 
         assertEquals(0, execute("report", "usage", "--format", "json", "--by", "model").exitCode());
         assertEquals(0, execute("report", "billing", "--rate-card", rateCard.toString()).exitCode());
+        CommandCapture prometheus = execute("report", "prometheus");
+        assertEquals(0, prometheus.exitCode());
+        assertTrue(prometheus.stdout().contains("gpum_gpu_health_score"));
     }
 
     @Test

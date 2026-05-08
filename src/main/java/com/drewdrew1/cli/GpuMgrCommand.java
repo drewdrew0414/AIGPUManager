@@ -12,6 +12,8 @@ import com.drewdrew1.cli.commands.PartCommand;
 import com.drewdrew1.cli.commands.QueueCommand;
 import com.drewdrew1.cli.commands.QuotaCommand;
 import com.drewdrew1.cli.commands.ReportCommand;
+import com.drewdrew1.cli.commands.RbacCommand;
+import com.drewdrew1.cli.commands.RuntimeCommand;
 import com.drewdrew1.cli.commands.SystemCommand;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -38,6 +40,8 @@ import java.time.Duration;
                 LogCommand.class,
                 IntegrationCommand.class,
                 ReportCommand.class,
+                RbacCommand.class,
+                RuntimeCommand.class,
                 SystemCommand.class
         }
 )

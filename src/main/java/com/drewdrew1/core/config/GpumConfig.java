@@ -9,6 +9,7 @@ public class GpumConfig {
     private KubernetesConfig kubernetes = new KubernetesConfig();
     private MlflowConfig mlflow = new MlflowConfig();
     private BentoMlConfig bentoml = new BentoMlConfig();
+    private MonitoringConfig monitoring = new MonitoringConfig();
     private Map<String, ExternalToolConfig> externalTools = new LinkedHashMap<>();
 
     public ToolConfig getTools() {
@@ -41,6 +42,14 @@ public class GpumConfig {
 
     public void setBentoml(BentoMlConfig bentoml) {
         this.bentoml = bentoml == null ? new BentoMlConfig() : bentoml;
+    }
+
+    public MonitoringConfig getMonitoring() {
+        return monitoring;
+    }
+
+    public void setMonitoring(MonitoringConfig monitoring) {
+        this.monitoring = monitoring == null ? new MonitoringConfig() : monitoring;
     }
 
     public Map<String, ExternalToolConfig> getExternalTools() {

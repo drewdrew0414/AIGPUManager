@@ -79,6 +79,12 @@ public class QueueCommand implements Runnable {
         @Option(names = "--val", required = true) private Integer val;
         @Override public Integer call() {
             CliSupport.requireRange(val, 1, 10, "val");
+            queueCommand.parent.createContext().accessControlService().requireRole(
+                    CliSupport.currentActor(),
+                    com.drewdrew1.core.model.RbacRole.ADMIN,
+                    null,
+                    "ADMIN role is required to promote queued requests."
+            );
             QueueEntry updated = queueCommand.parent.createContext().governanceService().promoteQueueEntry(id, val);
             System.out.printf("Queue entry %s promoted to priority %d%n", updated.id(), updated.priority());
             return 0;
@@ -92,6 +98,12 @@ public class QueueCommand implements Runnable {
         @Option(names = "--val", required = true) private Integer val;
         @Override public Integer call() {
             CliSupport.requireRange(val, 1, 10, "val");
+            queueCommand.parent.createContext().accessControlService().requireRole(
+                    CliSupport.currentActor(),
+                    com.drewdrew1.core.model.RbacRole.ADMIN,
+                    null,
+                    "ADMIN role is required to demote queued requests."
+            );
             QueueEntry updated = queueCommand.parent.createContext().governanceService().demoteQueueEntry(id, val);
             System.out.printf("Queue entry %s demoted to priority %d%n", updated.id(), updated.priority());
             return 0;

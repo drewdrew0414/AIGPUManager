@@ -78,6 +78,9 @@ public class SqliteInventoryRepository implements InventoryRepository {
                       ecc_enabled INTEGER,
                       interconnect_type TEXT NOT NULL,
                       health_state TEXT NOT NULL,
+                      integrated_graphics INTEGER NOT NULL DEFAULT 0,
+                      shared_system_memory INTEGER NOT NULL DEFAULT 0,
+                      shared_memory_total_mb INTEGER,
                       supports_mig INTEGER NOT NULL,
                       supports_partitioning INTEGER NOT NULL,
                       supports_compute INTEGER NOT NULL,
@@ -102,6 +105,11 @@ public class SqliteInventoryRepository implements InventoryRepository {
                       created_at TEXT NOT NULL
                     )
                     """);
+            ensureColumnExists(statement, "gpus", "integrated_graphics", "INTEGER NOT NULL DEFAULT 0");
+            ensureColumnExists(statement, "gpus", "shared_system_memory", "INTEGER NOT NULL DEFAULT 0");
+            ensureColumnExists(statement, "gpus", "shared_memory_total_mb", "INTEGER");
+            statement.execute("PRAGMA journal_mode=WAL");
+            statement.execute("PRAGMA busy_timeout=5000");
             initialized = true;
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to initialize SQLite schema", e);
@@ -146,9 +154,10 @@ public class SqliteInventoryRepository implements InventoryRepository {
                            node_hostname, vendor, device_id, model, uuid, pci_bus_id, driver_version,
                            vram_total_mb, vram_free_mb, utilization_gpu, utilization_memory,
                            temperature_c, power_usage_w, power_limit_w, ecc_enabled,
-                           interconnect_type, health_state, supports_mig, supports_partitioning,
+                           interconnect_type, health_state, integrated_graphics, shared_system_memory,
+                           shared_memory_total_mb, supports_mig, supports_partitioning,
                            supports_compute, supports_container_runtime, last_scanned_at
-                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                          """)) {
                 deleteStatement.setString(1, hostname);
                 deleteStatement.executeUpdate();
@@ -171,11 +180,14 @@ public class SqliteInventoryRepository implements InventoryRepository {
                     setBoolean(insertStatement, 15, gpu.eccEnabled());
                     insertStatement.setString(16, gpu.interconnectType().name());
                     insertStatement.setString(17, gpu.healthState().name());
-                    insertStatement.setInt(18, gpu.supportsMig() ? 1 : 0);
-                    insertStatement.setInt(19, gpu.supportsPartitioning() ? 1 : 0);
-                    insertStatement.setInt(20, gpu.supportsCompute() ? 1 : 0);
-                    insertStatement.setInt(21, gpu.supportsContainerRuntime() ? 1 : 0);
-                    insertStatement.setString(22, gpu.lastScannedAt().toString());
+                    insertStatement.setInt(18, gpu.integratedGraphics() ? 1 : 0);
+                    insertStatement.setInt(19, gpu.sharedSystemMemory() ? 1 : 0);
+                    setLong(insertStatement, 20, gpu.sharedMemoryTotalMb());
+                    insertStatement.setInt(21, gpu.supportsMig() ? 1 : 0);
+                    insertStatement.setInt(22, gpu.supportsPartitioning() ? 1 : 0);
+                    insertStatement.setInt(23, gpu.supportsCompute() ? 1 : 0);
+                    insertStatement.setInt(24, gpu.supportsContainerRuntime() ? 1 : 0);
+                    insertStatement.setString(25, gpu.lastScannedAt().toString());
                     insertStatement.addBatch();
                 }
                 insertStatement.executeBatch();
@@ -225,7 +237,8 @@ public class SqliteInventoryRepository implements InventoryRepository {
                      SELECT node_hostname, vendor, device_id, model, uuid, pci_bus_id, driver_version,
                             vram_total_mb, vram_free_mb, utilization_gpu, utilization_memory,
                             temperature_c, power_usage_w, power_limit_w, ecc_enabled,
-                            interconnect_type, health_state, supports_mig, supports_partitioning,
+                            interconnect_type, health_state, integrated_graphics, shared_system_memory,
+                            shared_memory_total_mb, supports_mig, supports_partitioning,
                             supports_compute, supports_container_runtime, last_scanned_at
                      FROM gpus
                      ORDER BY node_hostname, vendor, model, device_id
@@ -277,7 +290,8 @@ public class SqliteInventoryRepository implements InventoryRepository {
                      SELECT node_hostname, vendor, device_id, model, uuid, pci_bus_id, driver_version,
                             vram_total_mb, vram_free_mb, utilization_gpu, utilization_memory,
                             temperature_c, power_usage_w, power_limit_w, ecc_enabled,
-                            interconnect_type, health_state, supports_mig, supports_partitioning,
+                            interconnect_type, health_state, integrated_graphics, shared_system_memory,
+                            shared_memory_total_mb, supports_mig, supports_partitioning,
                             supports_compute, supports_container_runtime, last_scanned_at
                      FROM gpus
                      WHERE lower(node_hostname) = lower(?)
@@ -440,7 +454,11 @@ public class SqliteInventoryRepository implements InventoryRepository {
     }
 
     private Connection openConnection() throws SQLException {
-        return DriverManager.getConnection("jdbc:sqlite:" + dbPath.toAbsolutePath());
+        Connection connection = DriverManager.getConnection("jdbc:sqlite:" + dbPath.toAbsolutePath());
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA busy_timeout=5000");
+        }
+        return connection;
     }
 
     private static GpuDevice mapGpu(ResultSet rs) throws SQLException {
@@ -462,12 +480,27 @@ public class SqliteInventoryRepository implements InventoryRepository {
                 getBoolean(rs, "ecc_enabled"),
                 InterconnectType.valueOf(rs.getString("interconnect_type")),
                 HealthState.valueOf(rs.getString("health_state")),
+                rs.getInt("integrated_graphics") == 1,
+                rs.getInt("shared_system_memory") == 1,
+                getLong(rs, "shared_memory_total_mb"),
                 rs.getInt("supports_mig") == 1,
                 rs.getInt("supports_partitioning") == 1,
                 rs.getInt("supports_compute") == 1,
                 rs.getInt("supports_container_runtime") == 1,
                 Instant.parse(rs.getString("last_scanned_at"))
         );
+    }
+
+    private static void ensureColumnExists(Statement statement, String tableName, String columnName, String columnDefinition)
+            throws SQLException {
+        try (ResultSet rs = statement.executeQuery("PRAGMA table_info(" + tableName + ")")) {
+            while (rs.next()) {
+                if (columnName.equalsIgnoreCase(rs.getString("name"))) {
+                    return;
+                }
+            }
+        }
+        statement.execute("ALTER TABLE " + tableName + " ADD COLUMN " + columnName + " " + columnDefinition);
     }
 
     private static void setLong(PreparedStatement statement, int index, Long value) throws SQLException {

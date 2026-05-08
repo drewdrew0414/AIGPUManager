@@ -162,6 +162,11 @@ public class GovernanceService {
                     gpu.model(),
                     profile,
                     "ACTIVE",
+                    false,
+                    null,
+                    null,
+                    null,
+                    null,
                     Instant.now()
             );
             created.add(governanceRepository.createPartition(record));

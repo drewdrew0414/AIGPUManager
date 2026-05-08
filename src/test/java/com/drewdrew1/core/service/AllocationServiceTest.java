@@ -96,6 +96,52 @@ class AllocationServiceTest {
         assertEquals(1, second.devices().size());
     }
 
+    @Test
+    void treatsIntegratedIntelSharedMemoryAsAllocatableCapacity() {
+        Path dbPath = tempDir.resolve("alloc-intel-igpu.db");
+        SqliteInventoryRepository inventoryRepository = new SqliteInventoryRepository(dbPath);
+        SqliteAllocationRepository allocationRepository = new SqliteAllocationRepository(dbPath);
+        Instant now = Instant.parse("2026-05-07T00:00:00Z");
+
+        inventoryRepository.saveNode(new NodeInventory("intel-igpu", "Windows 11", "amd64", 16, 32768, now));
+        inventoryRepository.replaceNodeGpus("intel-igpu", List.of(new GpuDevice(
+                "intel-igpu",
+                GpuVendor.INTEL,
+                "0",
+                "Intel Arc 140V GPU",
+                "INTEL-140V-0",
+                null,
+                "32.0.101.6734",
+                256L,
+                null,
+                18.0,
+                null,
+                null,
+                null,
+                null,
+                null,
+                InterconnectType.PCIE,
+                HealthState.OK,
+                true,
+                true,
+                14336L,
+                false,
+                false,
+                true,
+                true,
+                now
+        )));
+        inventoryRepository.putNodeAttribute("intel-igpu", "label.role", "edge");
+
+        AllocationService service = new AllocationService(inventoryRepository, allocationRepository);
+        AllocationRecord record = service.allocate(new AllocationRequest(
+                "tester", null, 1, "140V", 8192L, false, 2, 5, false, AllocationAffinity.PACKED, "role=edge"
+        ));
+
+        assertEquals(1, record.devices().size());
+        assertEquals("intel-igpu", record.devices().getFirst().nodeHostname());
+    }
+
     private void seedInventory(SqliteInventoryRepository inventoryRepository) {
         Instant now = Instant.parse("2026-05-07T00:00:00Z");
         inventoryRepository.saveNode(new NodeInventory("node-a", "Linux", "amd64", 64, 524288, now));
@@ -129,6 +175,9 @@ class AllocationServiceTest {
                 true,
                 InterconnectType.NVLINK,
                 HealthState.OK,
+                false,
+                false,
+                null,
                 true,
                 true,
                 true,

@@ -38,7 +38,8 @@ import java.util.concurrent.Callable;
                 AllocCommand.ExtendCommand.class,
                 AllocCommand.ReleaseCommand.class,
                 AllocCommand.ReapCommand.class,
-                AllocCommand.MoveCommand.class
+                AllocCommand.MoveCommand.class,
+                AllocCommand.EstimateCommand.class
         }
 )
 public class AllocCommand implements Runnable {
@@ -83,6 +84,8 @@ public class AllocCommand implements Runnable {
         private String affinity;
         @Option(names = "--label-selector")
         private String labelSelector;
+        @Option(names = "--tenant")
+        private String tenant;
         @Option(names = "--dry-run")
         private boolean dryRun;
 
@@ -104,8 +107,8 @@ public class AllocCommand implements Runnable {
             CliSupport.requireOneOf(affinity, "affinity", Set.of("spread", "packed"));
 
             AllocationRequest request = new AllocationRequest(
-                    System.getProperty("user.name", "unknown"),
-                    null,
+                    CliSupport.currentActor(),
+                    blankToNull(tenant),
                     gpus == null ? 1 : gpus,
                     blankToNull(model),
                     vramMb,
@@ -249,12 +252,28 @@ public class AllocCommand implements Runnable {
         @Override
         public Integer call() {
             CliSupport.requireNonBlank(id, "id");
+            AllocationRecord existing = allocCommand.context().allocationService().findAllocation(id)
+                    .orElseThrow(() -> new IllegalArgumentException("Allocation not found: " + id));
+            var cleanup = (force || killProcess)
+                    ? allocCommand.context().gpuProcessService().cleanupAllocationProcesses(existing, force)
+                    : null;
             AllocationRecord record = allocCommand.context().allocationService().releaseAllocation(id);
             allocCommand.context().auditService().log("ALLOC_RELEASE", actor(), id, "force=" + force + ", killProcess=" + killProcess);
             allocCommand.context().logService().info("alloc", "release", "Released allocation", id);
             System.out.printf("Allocation %s released.%n", id);
-            if (force || killProcess) {
-                System.out.println("Process cleanup was requested. No matching local GPU-bound processes were identified for termination.");
+            if (cleanup != null) {
+                System.out.printf("Process cleanup: killed=%d, skipped=%d%n", cleanup.killed().size(), cleanup.skipped().size());
+                for (var warning : cleanup.warnings()) {
+                    System.out.println("- warning: " + warning);
+                }
+                for (var killed : cleanup.killed()) {
+                    System.out.printf("- killed pid=%d cmd=%s vendor=%s gpus=%s%n",
+                            killed.pid(), safe(killed.command()), killed.vendor(), String.join(",", killed.gpuSelectors()));
+                }
+                for (var skipped : cleanup.skipped()) {
+                    System.out.printf("- skipped pid=%d cmd=%s reason=%s%n",
+                            skipped.pid(), safe(skipped.command()), skipped.reason());
+                }
             }
             printRecord(record);
             return 0;
@@ -291,6 +310,38 @@ public class AllocCommand implements Runnable {
             allocCommand.context().logService().info("alloc", "move", "Moved allocation", id + " -> " + replacement.id());
             System.out.printf("Allocation %s moved to %s as replacement %s.%n", id, toNode, replacement.id());
             printRecord(replacement);
+            return 0;
+        }
+    }
+
+    @Command(name = "estimate", description = "Estimate VRAM for an AI workload")
+    static class EstimateCommand implements Callable<Integer> {
+        @ParentCommand private AllocCommand allocCommand;
+        @Option(names = "--model", required = true) private String model;
+        @Option(names = "--params-b", required = true) private Long paramsB;
+        @Option(names = "--precision", defaultValue = "fp16") private String precision;
+        @Option(names = "--context", defaultValue = "4096") private Integer contextLength;
+        @Option(names = "--batch", defaultValue = "1") private Integer batchSize;
+
+        @Override
+        public Integer call() {
+            CliSupport.requirePositiveLong(paramsB, "params-b");
+            CliSupport.requirePositive(contextLength, "context");
+            CliSupport.requirePositive(batchSize, "batch");
+            var estimate = allocCommand.context().workloadProfileService()
+                    .estimate(model, paramsB, precision, contextLength, batchSize);
+            System.out.printf("Model: %s%n", estimate.model());
+            System.out.printf("Parameters: %dB%n", estimate.parametersBillions());
+            System.out.printf("Precision: %s%n", estimate.precision());
+            System.out.printf("Weight memory MB: %d%n", estimate.weightMemoryMb());
+            System.out.printf("KV cache MB: %d%n", estimate.kvCacheMb());
+            System.out.printf("Runtime overhead MB: %d%n", estimate.runtimeOverheadMb());
+            System.out.printf("Recommended VRAM MB: %d%n", estimate.recommendedVramMb());
+            System.out.println("Suggested request:");
+            System.out.printf("gpum alloc request --gpus 1 --vram %d --model <gpu-model>%n", estimate.recommendedVramMb());
+            for (String note : estimate.notes()) {
+                System.out.println("- " + note);
+            }
             return 0;
         }
     }
@@ -392,6 +443,6 @@ public class AllocCommand implements Runnable {
     }
 
     private static String actor() {
-        return System.getProperty("user.name", "unknown");
+        return CliSupport.currentActor();
     }
 }

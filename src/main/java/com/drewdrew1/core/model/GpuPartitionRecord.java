@@ -10,6 +10,11 @@ public record GpuPartitionRecord(
         String gpuModel,
         String profile,
         String status,
+        boolean hardwareApplied,
+        String hardwareVendor,
+        String hardwareGpuInstanceId,
+        String hardwareComputeInstanceIds,
+        String approvalId,
         Instant createdAt
 ) {
 }

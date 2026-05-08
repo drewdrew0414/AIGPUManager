@@ -7,12 +7,14 @@ public class ToolConfig {
     private String rocmSmi = "rocm-smi";
     private String xpuSmi = "xpu-smi";
     private String ssh = "ssh";
+    private String docker = "docker";
     private String kubectl = "kubectl";
     private String mlflow = "mlflow";
     private String bentoml = "bentoml";
     private String powershell = "powershell";
     private String cmd = "cmd";
     private String bash = "bash";
+    private String gpumAgentCommand = "gpum";
 
     public String getNvidiaSmi() {
         return nvidiaSmi;
@@ -52,6 +54,14 @@ public class ToolConfig {
 
     public void setSsh(String ssh) {
         this.ssh = ssh;
+    }
+
+    public String getDocker() {
+        return docker;
+    }
+
+    public void setDocker(String docker) {
+        this.docker = docker;
     }
 
     public String getKubectl() {
@@ -100,5 +110,13 @@ public class ToolConfig {
 
     public void setBash(String bash) {
         this.bash = bash;
+    }
+
+    public String getGpumAgentCommand() {
+        return gpumAgentCommand;
+    }
+
+    public void setGpumAgentCommand(String gpumAgentCommand) {
+        this.gpumAgentCommand = gpumAgentCommand;
     }
 }

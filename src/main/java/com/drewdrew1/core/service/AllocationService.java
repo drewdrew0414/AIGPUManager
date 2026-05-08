@@ -7,6 +7,8 @@ import com.drewdrew1.core.model.AllocationRecord;
 import com.drewdrew1.core.model.AllocationRequest;
 import com.drewdrew1.core.model.AllocationStatus;
 import com.drewdrew1.core.model.GpuDevice;
+import com.drewdrew1.core.model.InterconnectType;
+import com.drewdrew1.core.model.NodeInventory;
 import com.drewdrew1.core.repository.AllocationRepository;
 import com.drewdrew1.core.repository.InventoryRepository;
 
@@ -28,6 +30,9 @@ import java.util.UUID;
 
 /** Contains scheduling and allocation lifecycle logic for GPU reservations. */
 public class AllocationService {
+    private static final long INTEGRATED_GPU_OS_RESERVE_MB = 4096L;
+    private static final double INTEGRATED_GPU_SHARED_MEMORY_RATIO = 0.50;
+
     private final InventoryRepository inventoryRepository;
     private final AllocationRepository allocationRepository;
 
@@ -143,6 +148,8 @@ public class AllocationService {
         inventoryRepository.initialize();
         allocationRepository.initialize();
 
+        Map<String, NodeInventory> nodesByHostname = inventoryRepository.listNodes().stream()
+                .collect(LinkedHashMap::new, (map, node) -> map.put(node.hostname(), node), Map::putAll);
         Map<String, Map<String, String>> nodeAttributes = inventoryRepository.listNodeAttributes();
         List<GpuDevice> inventory = inventoryRepository.listGpus();
         List<AllocationRecord> activeAllocations = allocationRepository.listActive();
@@ -163,10 +170,13 @@ public class AllocationService {
             if (!nodeSchedulable(nodeAttributes.getOrDefault(gpu.nodeHostname(), Map.of()))) {
                 continue;
             }
+            if (gpuQuarantined(nodeAttributes.getOrDefault(gpu.nodeHostname(), Map.of()), gpu)) {
+                continue;
+            }
             if (!matchesSelector(nodeAttributes.getOrDefault(gpu.nodeHostname(), Map.of()), request.labelSelector())) {
                 continue;
             }
-            if (!matchesRequest(gpu, request)) {
+            if (!matchesRequest(gpu, request, nodesByHostname.get(gpu.nodeHostname()))) {
                 continue;
             }
             if (allocatedGpuKeys.contains(gpuKey(gpu))) {
@@ -174,6 +184,15 @@ public class AllocationService {
             }
             eligibleByNode.computeIfAbsent(gpu.nodeHostname(), ignored -> new ArrayList<>()).add(gpu);
         }
+
+        eligibleByNode.values().forEach(gpus -> gpus.sort(Comparator
+                .comparingInt(this::topologyScore)
+                .reversed()
+                .thenComparing(Comparator.comparingLong(
+                        (GpuDevice gpu) -> effectiveAllocatableMemoryMb(gpu, nodesByHostname.get(gpu.nodeHostname()))
+                ).reversed())
+                .thenComparing(GpuDevice::model, Comparator.nullsLast(String::compareToIgnoreCase))
+                .thenComparing(GpuDevice::deviceId, Comparator.nullsLast(String::compareToIgnoreCase))));
 
         if (request.exclusiveNode()) {
             eligibleByNode.entrySet().removeIf(entry -> hasAnyActiveAllocationOnNode(activeAllocations, entry.getKey()));
@@ -238,20 +257,46 @@ public class AllocationService {
         return Math.max(1, (int) Math.ceil(seconds / 3600.0));
     }
 
-    private boolean matchesRequest(GpuDevice gpu, AllocationRequest request) {
+    private boolean matchesRequest(GpuDevice gpu, AllocationRequest request, NodeInventory node) {
         if (request.model() != null && (gpu.model() == null ||
                 !gpu.model().toLowerCase(Locale.ROOT).contains(request.model().toLowerCase(Locale.ROOT)))) {
             return false;
         }
-        if (request.minVramMb() != null && (gpu.vramTotalMb() == null || gpu.vramTotalMb() < request.minVramMb())) {
+        long effectiveMemoryMb = effectiveAllocatableMemoryMb(gpu, node);
+        if (request.minVramMb() != null && effectiveMemoryMb < request.minVramMb()) {
             return false;
         }
         return true;
     }
 
+    private long effectiveAllocatableMemoryMb(GpuDevice gpu, NodeInventory node) {
+        long dedicatedMb = gpu.vramTotalMb() == null ? 0L : gpu.vramTotalMb();
+        if (!gpu.integratedGraphics() && !gpu.sharedSystemMemory()) {
+            return dedicatedMb;
+        }
+        if (node == null) {
+            return dedicatedMb;
+        }
+        long sharedBudgetMb = gpu.sharedMemoryTotalMb() != null
+                ? gpu.sharedMemoryTotalMb()
+                : estimateSharedMemoryFromSystemRam(node.memoryTotalMb());
+        return Math.max(dedicatedMb, sharedBudgetMb);
+    }
+
+    private long estimateSharedMemoryFromSystemRam(long nodeMemoryTotalMb) {
+        long usableSystemMemoryMb = Math.max(0L, nodeMemoryTotalMb - INTEGRATED_GPU_OS_RESERVE_MB);
+        return Math.round(usableSystemMemoryMb * INTEGRATED_GPU_SHARED_MEMORY_RATIO);
+    }
+
     private boolean nodeSchedulable(Map<String, String> attrs) {
         return !"true".equalsIgnoreCase(attrs.get("state.maintenance"))
-                && !"true".equalsIgnoreCase(attrs.get("state.drained"));
+                && !"true".equalsIgnoreCase(attrs.get("state.drained"))
+                && !"true".equalsIgnoreCase(attrs.get("state.degraded"))
+                && !"true".equalsIgnoreCase(attrs.get("state.quarantined"));
+    }
+
+    private boolean gpuQuarantined(Map<String, String> attrs, GpuDevice gpu) {
+        return "true".equalsIgnoreCase(attrs.get(HealthScoringService.gpuQuarantineKey(gpu.deviceId())));
     }
 
     private boolean matchesSelector(Map<String, String> attrs, String selector) {
@@ -287,7 +332,9 @@ public class AllocationService {
     private List<AllocationDevice> choosePacked(Map<String, List<GpuDevice>> byNode, int gpuCount) {
         List<Map.Entry<String, List<GpuDevice>>> candidates = new ArrayList<>(byNode.entrySet());
         candidates.sort(Comparator
-                .comparingInt((Map.Entry<String, List<GpuDevice>> entry) -> entry.getValue().size())
+                .comparingInt((Map.Entry<String, List<GpuDevice>> entry) -> nodeTopologyScore(entry.getValue()))
+                .reversed()
+                .thenComparing((Map.Entry<String, List<GpuDevice>> entry) -> entry.getValue().size(), Comparator.reverseOrder())
                 .thenComparing(Map.Entry::getKey));
         for (Map.Entry<String, List<GpuDevice>> entry : candidates) {
             if (entry.getValue().size() >= gpuCount) {
@@ -300,7 +347,11 @@ public class AllocationService {
     private List<AllocationDevice> chooseSpread(Map<String, List<GpuDevice>> byNode, int gpuCount) {
         Map<String, ArrayDeque<GpuDevice>> queues = new LinkedHashMap<>();
         List<String> nodes = new ArrayList<>(byNode.keySet());
-        nodes.sort(Comparator.comparing((String node) -> byNode.get(node).size()).reversed().thenComparing(node -> node));
+        nodes.sort(Comparator
+                .comparingInt((String node) -> nodeTopologyScore(byNode.get(node)))
+                .reversed()
+                .thenComparing(Comparator.comparing((String node) -> byNode.get(node).size()).reversed())
+                .thenComparing(node -> node));
         for (String node : nodes) {
             queues.put(node, new ArrayDeque<>(byNode.get(node)));
         }
@@ -379,5 +430,24 @@ public class AllocationService {
         return device.uuid() != null && !device.uuid().isBlank()
                 ? "uuid:" + device.uuid()
                 : device.nodeHostname() + ":" + device.deviceId();
+    }
+
+    private int nodeTopologyScore(List<GpuDevice> gpus) {
+        int score = 0;
+        for (GpuDevice gpu : gpus) {
+            score += topologyScore(gpu);
+        }
+        return score;
+    }
+
+    private int topologyScore(GpuDevice gpu) {
+        InterconnectType type = gpu.interconnectType();
+        if (type == InterconnectType.NVLINK || type == InterconnectType.XGMI || type == InterconnectType.XE_LINK) {
+            return 100;
+        }
+        if (type == InterconnectType.PCIE) {
+            return 30;
+        }
+        return 0;
     }
 }

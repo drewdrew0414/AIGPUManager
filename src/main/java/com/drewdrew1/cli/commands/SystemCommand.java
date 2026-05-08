@@ -17,7 +17,6 @@ import picocli.CommandLine.Model.CommandSpec;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
-import java.nio.file.StandardCopyOption;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -62,16 +61,28 @@ public class SystemCommand implements Runnable {
                 return 0;
             }
             if (edit) {
+                systemCommand.context().accessControlService().requireRole(
+                        CliSupport.currentActor(),
+                        com.drewdrew1.core.model.RbacRole.ADMIN,
+                        null,
+                        "ADMIN role is required to edit runtime config."
+                );
                 Path path = configPath(systemCommand);
                 if (!Files.exists(path)) {
-                    CliSupport.ensureParentDirectory(path);
-                    Files.writeString(path, ConfigLoader.dumpDefaults());
+                    CliSupport.requireNotDirectory(path, "config path");
+                    CliSupport.writeStringAtomic(path, ConfigLoader.dumpDefaults());
                 }
                 launchEditor(path);
                 System.out.println("Opened config in editor: " + path.toAbsolutePath());
                 return 0;
             }
             if (reload) {
+                systemCommand.context().accessControlService().requireRole(
+                        CliSupport.currentActor(),
+                        com.drewdrew1.core.model.RbacRole.ADMIN,
+                        null,
+                        "ADMIN role is required to reload runtime config."
+                );
                 System.out.println("Runtime config reload completed. Current build uses process-local config only.");
                 return 0;
             }
@@ -95,6 +106,14 @@ public class SystemCommand implements Runnable {
         @Option(names = "--vacuum") private boolean vacuum;
         @Option(names = "--orphan-clean") private boolean orphanClean;
         @Override public Integer call() throws Exception {
+            if (repair || vacuum || orphanClean) {
+                systemCommand.context().accessControlService().requireRole(
+                        CliSupport.currentActor(),
+                        com.drewdrew1.core.model.RbacRole.ADMIN,
+                        null,
+                        "ADMIN role is required to modify the metadata database."
+                );
+            }
             systemCommand.context().inventoryRepository().initialize();
             try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + systemCommand.context().dbPath().toAbsolutePath());
                  Statement statement = connection.createStatement()) {
@@ -177,9 +196,10 @@ public class SystemCommand implements Runnable {
         @ParentCommand private SystemCommand systemCommand;
         @Option(names = "--path", required = true) private Path path;
         @Override public Integer call() throws Exception {
-            CliSupport.ensureParentDirectory(path);
+            CliSupport.requireNotDirectory(path, "backup path");
+            CliSupport.requireDistinctPaths(systemCommand.context().dbPath(), path, "Backup path must differ from the live database path.");
             systemCommand.context().inventoryRepository().initialize();
-            Files.copy(systemCommand.context().dbPath(), path, StandardCopyOption.REPLACE_EXISTING);
+            CliSupport.writeBytesAtomic(path, Files.readAllBytes(systemCommand.context().dbPath()));
             systemCommand.context().logService().info("system", "backup", "Created database backup", path.toAbsolutePath().toString());
             System.out.println("Backup created at " + path.toAbsolutePath());
             return 0;
@@ -191,9 +211,22 @@ public class SystemCommand implements Runnable {
         @ParentCommand private SystemCommand systemCommand;
         @Option(names = "--path", required = true) private Path path;
         @Override public Integer call() throws Exception {
-            CliSupport.require(Files.exists(path), "Backup file not found: " + path);
-            CliSupport.ensureParentDirectory(systemCommand.context().dbPath());
-            Files.copy(path, systemCommand.context().dbPath(), StandardCopyOption.REPLACE_EXISTING);
+            CliSupport.requireRegularFile(path, "backup file");
+            CliSupport.requireDistinctPaths(path, systemCommand.context().dbPath(), "Restore source must differ from the live database path.");
+            systemCommand.context().accessControlService().requireRole(
+                    CliSupport.currentActor(),
+                    com.drewdrew1.core.model.RbacRole.ADMIN,
+                    null,
+                    "ADMIN role is required to restore the metadata database."
+            );
+            byte[] payload = Files.readAllBytes(path);
+            CliSupport.require(looksLikeSqlite(payload), "Restore file does not look like a SQLite database: " + path);
+            Path currentDb = systemCommand.context().dbPath();
+            if (Files.exists(currentDb)) {
+                Path rollbackPath = currentDb.resolveSibling(currentDb.getFileName() + ".before-restore.bak");
+                CliSupport.writeBytesAtomic(rollbackPath, Files.readAllBytes(currentDb));
+            }
+            CliSupport.writeBytesAtomic(currentDb, payload);
             systemCommand.context().logService().info("system", "restore", "Restored database backup", path.toAbsolutePath().toString());
             System.out.println("Database restored from " + path.toAbsolutePath());
             return 0;
@@ -204,6 +237,12 @@ public class SystemCommand implements Runnable {
     static class UpdateCommand implements Callable<Integer> {
         @ParentCommand private SystemCommand systemCommand;
         @Override public Integer call() throws Exception {
+            systemCommand.context().accessControlService().requireRole(
+                    CliSupport.currentActor(),
+                    com.drewdrew1.core.model.RbacRole.ADMIN,
+                    null,
+                    "ADMIN role is required to refresh launcher scripts."
+            );
             Path runtimeHome = resolveRuntimeHome();
             writeLaunchers(runtimeHome);
             systemCommand.context().logService().info("system", "update", "Refreshed runtime launchers", runtimeHome.toAbsolutePath().toString());
@@ -243,10 +282,10 @@ public class SystemCommand implements Runnable {
 
     private static void writeLaunchers(Path runtimeHome) throws Exception {
         Files.createDirectories(runtimeHome);
-        Files.writeString(runtimeHome.resolve("gpum.cmd"), launcherCmd());
-        Files.writeString(runtimeHome.resolve("gpum.ps1"), launcherPs1());
+        CliSupport.writeStringAtomic(runtimeHome.resolve("gpum.cmd"), launcherCmd());
+        CliSupport.writeStringAtomic(runtimeHome.resolve("gpum.ps1"), launcherPs1());
         Path sh = runtimeHome.resolve("gpum");
-        Files.writeString(sh, launcherSh());
+        CliSupport.writeStringAtomic(sh, launcherSh());
         try {
             Files.setPosixFilePermissions(sh, EnumSet.of(
                     PosixFilePermission.OWNER_READ,
@@ -315,5 +354,18 @@ public class SystemCommand implements Runnable {
             }
         }
         throw new IllegalStateException("No editor configured.");
+    }
+
+    private static boolean looksLikeSqlite(byte[] payload) {
+        byte[] prefix = "SQLite format 3".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        if (payload == null || payload.length < prefix.length) {
+            return false;
+        }
+        for (int i = 0; i < prefix.length; i++) {
+            if (payload[i] != prefix[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 }

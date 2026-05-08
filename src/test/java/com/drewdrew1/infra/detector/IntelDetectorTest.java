@@ -64,6 +64,7 @@ class IntelDetectorTest {
         assertEquals(65536L, gpu.vramTotalMb());
         assertEquals(49152L, gpu.vramFreeMb());
         assertEquals(InterconnectType.XE_LINK, gpu.interconnectType());
+        assertEquals(27.0, gpu.utilizationGpu());
         assertTrue(Boolean.TRUE.equals(gpu.eccEnabled()));
     }
 
@@ -132,6 +133,18 @@ class IntelDetectorTest {
                               }
                             ]
                             """);
+            executor.addSuccess(List.of(
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "$samples = (Get-Counter '\\GPU Engine(*)\\Utilization Percentage').CounterSamples; $value = ($samples | Where-Object { $_.InstanceName -notmatch 'engtype_copy' } | Measure-Object -Property CookedValue -Sum).Sum; if ($null -eq $value) { '' } else { [math]::Round([double]$value, 2) }"
+            ), "23.5");
+            executor.addSuccess(List.of(
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "[math]::Round(((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1MB), 0)"
+            ), "32768");
 
             DetectionResult result = new IntelDetector(executor, new CapabilityResolver(), "xpu-smi", "powershell")
                     .detect("windows-arc", Instant.parse("2026-05-08T00:00:00Z"));
@@ -140,6 +153,7 @@ class IntelDetectorTest {
             GpuDevice gpu = result.devices().getFirst();
             assertEquals("Intel(R) Arc(TM) Pro A60", gpu.model());
             assertEquals(12288L, gpu.vramTotalMb());
+            assertEquals(23.5, gpu.utilizationGpu());
             assertEquals(InterconnectType.PCIE, gpu.interconnectType());
         } finally {
             if (originalOsName == null) {
@@ -148,5 +162,54 @@ class IntelDetectorTest {
                 System.setProperty("os.name", originalOsName);
             }
         }
+    }
+
+    @Test
+    void parsesAlternativeOneApiStyleUtilizationAndSharedMemoryFields() {
+        FakeCommandExecutor executor = new FakeCommandExecutor()
+                .addSuccess(List.of("xpu-smi", "discovery", "-j"), """
+                        {
+                          "device_list": [
+                            {
+                              "device_id": 0,
+                              "device_name": "Intel Arc 140V GPU",
+                              "uuid": "INTEL-140V",
+                              "shared_memory_total": "17179869184"
+                            }
+                          ]
+                        }
+                        """)
+                .addSuccess(List.of("xpu-smi", "discovery", "-d", "0", "-j"), """
+                        {
+                          "device_id": 0,
+                          "driver_version": "1.3.31000",
+                          "memory_physical_size": "268435456",
+                          "shared_memory_total": "17179869184"
+                        }
+                        """)
+                .addSuccess(List.of("xpu-smi", "stats", "-d", "0", "-j"), """
+                        {
+                          "device_id": 0,
+                          "engine_utilization": "34",
+                          "device_memory_utilization": "19"
+                        }
+                        """)
+                .addSuccess(List.of("xpu-smi", "health", "-d", "0", "-j"), """
+                        {
+                          "device_id": 0,
+                          "health": "ok"
+                        }
+                        """);
+
+        DetectionResult result = new IntelDetector(executor, new CapabilityResolver(), "xpu-smi")
+                .detect("intel-140v", Instant.parse("2026-05-07T00:00:00Z"));
+
+        assertEquals(1, result.devices().size());
+        GpuDevice gpu = result.devices().getFirst();
+        assertEquals(34.0, gpu.utilizationGpu());
+        assertEquals(19.0, gpu.utilizationMemory());
+        assertTrue(gpu.integratedGraphics());
+        assertTrue(gpu.sharedSystemMemory());
+        assertEquals(16384L, gpu.sharedMemoryTotalMb());
     }
 }

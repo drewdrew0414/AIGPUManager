@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+set -eu
+
+ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+TARGET_JAR="$ROOT_DIR/gpu-mgr.jar"
+
+if [ ! -f "$TARGET_JAR" ]; then
+  echo "ERROR: gpum jar not found at $TARGET_JAR" >&2
+  echo "Place gpu-mgr.jar in the same directory as gpum." >&2
+  exit 1
+fi
+
+exec java --enable-native-access=ALL-UNNAMED -jar "$TARGET_JAR" "$@"

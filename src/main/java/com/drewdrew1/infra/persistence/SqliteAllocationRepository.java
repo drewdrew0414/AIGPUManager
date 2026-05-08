@@ -95,6 +95,8 @@ public class SqliteAllocationRepository implements AllocationRepository {
                       allocation_id TEXT NOT NULL
                     )
                     """);
+            statement.execute("PRAGMA journal_mode=WAL");
+            statement.execute("PRAGMA busy_timeout=5000");
             initialized = true;
         } catch (SQLException e) {
             throw new IllegalStateException("Failed to initialize allocation schema", e);
@@ -420,7 +422,11 @@ public class SqliteAllocationRepository implements AllocationRepository {
     }
 
     private Connection openConnection() throws SQLException {
-        return DriverManager.getConnection("jdbc:sqlite:" + dbPath.toAbsolutePath());
+        Connection connection = DriverManager.getConnection("jdbc:sqlite:" + dbPath.toAbsolutePath());
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("PRAGMA busy_timeout=5000");
+        }
+        return connection;
     }
 
     private static Long getLong(ResultSet rs, String column) throws SQLException {

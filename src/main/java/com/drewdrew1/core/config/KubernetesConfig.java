@@ -7,6 +7,7 @@ public class KubernetesConfig {
     private String namespace = "default";
     private String serviceAccount = "default";
     private String imagePullPolicy = "IfNotPresent";
+    private String gpuResourceKey;
 
     public boolean isEnabled() {
         return enabled;
@@ -46,5 +47,13 @@ public class KubernetesConfig {
 
     public void setImagePullPolicy(String imagePullPolicy) {
         this.imagePullPolicy = imagePullPolicy;
+    }
+
+    public String getGpuResourceKey() {
+        return gpuResourceKey;
+    }
+
+    public void setGpuResourceKey(String gpuResourceKey) {
+        this.gpuResourceKey = gpuResourceKey;
     }
 }
