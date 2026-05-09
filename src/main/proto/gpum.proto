@@ -1,0 +1,144 @@
+syntax = "proto3";
+
+package gpum.v1;
+
+option java_package = "com.drewdrew1.grpc.proto";
+option java_multiple_files = true;
+
+service GpumControl {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc ListResources(ListResourcesRequest) returns (ListResourcesResponse);
+  rpc PlanAllocation(PlanAllocationRequest) returns (PlanAllocationResponse);
+  rpc Allocate(AllocateRequest) returns (AllocateResponse);
+  rpc Release(ReleaseRequest) returns (ReleaseResponse);
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+  rpc NodeHeartbeat(NodeHeartbeatRequest) returns (NodeHeartbeatResponse);
+  rpc StreamTelemetry(stream TelemetryClientEvent) returns (stream TelemetryEvent);
+}
+
+message HealthRequest {
+}
+
+message HealthResponse {
+  string status = 1;
+  string version = 2;
+  string storage = 3;
+  string cache = 4;
+  string detail = 5;
+}
+
+message ListResourcesRequest {
+}
+
+message ListResourcesResponse {
+  int32 nodes = 1;
+  int32 gpus = 2;
+  int32 active_allocations = 3;
+  int32 ops_records = 4;
+}
+
+message PlanAllocationRequest {
+  int32 gpus = 1;
+  int64 min_vram_mb = 2;
+  string model_filter = 3;
+  string tenant = 4;
+}
+
+message PlanAllocationResponse {
+  bool feasible = 1;
+  string reason = 2;
+  string dry_run_command = 3;
+}
+
+message AllocateRequest {
+  string owner = 1;
+  string tenant = 2;
+  int32 gpus = 3;
+  string model = 4;
+  int64 min_vram_mb = 5;
+  int32 hours = 6;
+  int32 priority = 7;
+  string affinity = 8;
+  string label_selector = 9;
+  bool exclusive_node = 10;
+  bool preemptible = 11;
+  bool dry_run = 12;
+}
+
+message DeviceLease {
+  string node = 1;
+  string device_id = 2;
+  string uuid = 3;
+  string model = 4;
+  string pci_bus_id = 5;
+}
+
+message AllocateResponse {
+  bool allocated = 1;
+  bool dry_run = 2;
+  string id = 3;
+  string status = 4;
+  string tenant = 5;
+  string owner = 6;
+  string primary_node = 7;
+  int32 requested_gpus = 8;
+  string created_at = 9;
+  string expires_at = 10;
+  repeated DeviceLease devices = 11;
+  string reason = 12;
+}
+
+message ReleaseRequest {
+  string id = 1;
+}
+
+message ReleaseResponse {
+  bool released = 1;
+  string id = 2;
+  string status = 3;
+  string released_at = 4;
+}
+
+message SubmitJobRequest {
+  string name = 1;
+  string allocation_id = 2;
+  string command = 3;
+  string image = 4;
+  string engine = 5;
+  string gpus = 6;
+  string shm_size = 7;
+  bool execute = 8;
+}
+
+message SubmitJobResponse {
+  string record_id = 1;
+  string status = 2;
+  string name = 3;
+  repeated string warnings = 4;
+  bool executed = 5;
+}
+
+message NodeHeartbeatRequest {
+  string node = 1;
+  string status = 2;
+  string detail = 3;
+  string labels = 4;
+  int32 allocatable_gpus = 5;
+}
+
+message NodeHeartbeatResponse {
+  string node = 1;
+  string status = 2;
+  string record_id = 3;
+  string timestamp = 4;
+}
+
+message TelemetryClientEvent {
+  string client_id = 1;
+  string filter = 2;
+}
+
+message TelemetryEvent {
+  string timestamp = 1;
+  string payload_json = 2;
+}

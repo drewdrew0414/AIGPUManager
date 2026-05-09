@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
 
@@ -97,23 +98,28 @@ public class AllocCommand implements Runnable {
             }
             if (vramMb != null) {
                 CliSupport.requirePositiveLong(vramMb, "vram");
-            }
-            if (hours != null) {
-                CliSupport.requireRange(hours, 1, 720, "hours");
+                CliSupport.require(vramMb <= 4_000_000L, "vram exceeds safety ceiling of 4,000,000 MiB");
             }
             if (priority != null) {
                 CliSupport.requireRange(priority, 0, 10, "priority");
             }
             CliSupport.requireOneOf(affinity, "affinity", Set.of("spread", "packed"));
+            Map<String, String> safetyPolicy = latestSafetyPolicy(allocCommand);
+            int requestedGpus = gpus == null ? 1 : gpus;
+            int requestedHours = hours == null ? 24 : hours;
+            int maxGpus = intValue(safetyPolicy, "maxGpusPerRequest", 128);
+            int maxHours = intValue(safetyPolicy, "maxLeaseHours", 720);
+            CliSupport.requireRange(requestedGpus, 1, maxGpus, "gpus");
+            CliSupport.requireRange(requestedHours, 1, maxHours, "hours");
 
             AllocationRequest request = new AllocationRequest(
                     CliSupport.currentActor(),
                     blankToNull(tenant),
-                    gpus == null ? 1 : gpus,
+                    requestedGpus,
                     blankToNull(model),
                     vramMb,
                     exclusive,
-                    hours == null ? 24 : hours,
+                    requestedHours,
                     priority == null ? 5 : priority,
                     preemptible,
                     AllocationAffinity.valueOf(affinity.toUpperCase(Locale.ROOT)),
@@ -444,5 +450,15 @@ public class AllocCommand implements Runnable {
 
     private static String actor() {
         return CliSupport.currentActor();
+    }
+
+    private static Map<String, String> latestSafetyPolicy(AllocCommand allocCommand) {
+        var records = allocCommand.context().opsRepository().list("system", "safety-policy");
+        return records.isEmpty() ? Map.of() : records.getFirst().metadata();
+    }
+
+    private static int intValue(Map<String, String> metadata, String key, int fallback) {
+        String value = metadata.get(key);
+        return value == null || value.isBlank() ? fallback : Integer.parseInt(value);
     }
 }

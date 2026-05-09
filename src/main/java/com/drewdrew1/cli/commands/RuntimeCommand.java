@@ -6,7 +6,9 @@ import com.drewdrew1.cli.GpuMgrCommand;
 import com.drewdrew1.core.model.NativeGpuMetric;
 import com.drewdrew1.core.model.RuntimeEvent;
 import com.drewdrew1.core.model.RuntimeWorkerRecord;
+import com.drewdrew1.core.model.GpuDevice;
 import com.drewdrew1.core.service.ContainerReconcileService;
+import com.drewdrew1.core.service.GpuProcessService;
 import com.drewdrew1.core.service.RuntimeWorkerService;
 import com.github.freva.asciitable.AsciiTable;
 import picocli.CommandLine.Command;
@@ -33,7 +35,8 @@ import java.util.concurrent.Callable;
                 RuntimeCommand.DaemonCommand.class,
                 RuntimeCommand.OomCommand.class,
                 RuntimeCommand.ReconcileCommand.class,
-                RuntimeCommand.MigrateCommand.class
+                RuntimeCommand.MigrateCommand.class,
+                RuntimeCommand.ZombieCommand.class
         }
 )
 public class RuntimeCommand implements Runnable {
@@ -545,6 +548,84 @@ public class RuntimeCommand implements Runnable {
                 }
                 return 0;
             }
+        }
+    }
+
+    @Command(
+            name = "zombie",
+            description = "Detect or clean local GPU-bound zombie/stale processes",
+            subcommands = {
+                    ZombieCommand.ListCommand.class,
+                    ZombieCommand.CleanCommand.class
+            }
+    )
+    static class ZombieCommand implements Runnable {
+        @ParentCommand private RuntimeCommand runtimeCommand;
+        @Spec private CommandSpec spec;
+        @Override public void run() { spec.commandLine().usage(System.out); }
+
+        @Command(name = "list", description = "List processes currently bound to a known GPU")
+        static class ListCommand implements Callable<Integer> {
+            @ParentCommand private ZombieCommand zombieCommand;
+            @Option(names = "--gpu-id", required = true) private String gpuId;
+
+            @Override public Integer call() {
+                GpuDevice gpu = findGpu(zombieCommand.runtimeCommand, gpuId);
+                List<GpuProcessService.ProcessMatch> matches = zombieCommand.runtimeCommand.context()
+                        .gpuProcessService().listProcessesForGpu(gpu);
+                if (matches.isEmpty()) {
+                    System.out.println("No GPU-bound processes found.");
+                    return 0;
+                }
+                for (GpuProcessService.ProcessMatch match : matches) {
+                    System.out.printf("pid=%d vendor=%s command=%s selectors=%s%n",
+                            match.pid(), match.vendor(), match.command(), String.join(",", match.gpuSelectors()));
+                }
+                return 0;
+            }
+        }
+
+        @Command(name = "clean", description = "Preview or terminate GPU-bound processes for one GPU")
+        static class CleanCommand implements Callable<Integer> {
+            @ParentCommand private ZombieCommand zombieCommand;
+            @Option(names = "--gpu-id", required = true) private String gpuId;
+            @Option(names = "--force") private boolean force;
+            @Option(names = "--execute") private boolean execute;
+
+            @Override public Integer call() {
+                GpuDevice gpu = findGpu(zombieCommand.runtimeCommand, gpuId);
+                if (!execute) {
+                    System.out.println("Dry-run zombie cleanup. Matching processes:");
+                    List<GpuProcessService.ProcessMatch> matches;
+                    try {
+                        matches = zombieCommand.runtimeCommand.context()
+                                .gpuProcessService().listProcessesForGpu(gpu);
+                    } catch (Exception e) {
+                        System.out.println("- process discovery unavailable: " + e.getMessage());
+                        return 0;
+                    }
+                    for (GpuProcessService.ProcessMatch match : matches) {
+                        System.out.printf("- pid=%d command=%s%n", match.pid(), match.command());
+                    }
+                    if (matches.isEmpty()) {
+                        System.out.println("- none");
+                    }
+                    return 0;
+                }
+                GpuProcessService.CleanupResult result = zombieCommand.runtimeCommand.context()
+                        .gpuProcessService().cleanupGpuProcesses(gpu, force);
+                System.out.printf("Killed=%d skipped=%d%n", result.killed().size(), result.skipped().size());
+                return 0;
+            }
+        }
+
+        private static GpuDevice findGpu(RuntimeCommand runtimeCommand, String id) {
+            return runtimeCommand.context().inventoryRepository().listGpus().stream()
+                    .filter(gpu -> id.equalsIgnoreCase(CliSupport.safe(gpu.deviceId()))
+                            || id.equalsIgnoreCase(CliSupport.safe(gpu.uuid()))
+                            || id.equalsIgnoreCase(gpu.nodeHostname() + ":" + CliSupport.safe(gpu.deviceId())))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("GPU not found: " + id));
         }
     }
 

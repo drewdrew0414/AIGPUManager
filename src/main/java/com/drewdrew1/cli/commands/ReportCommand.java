@@ -27,7 +27,9 @@ import java.util.concurrent.Callable;
         subcommands = {
                 ReportCommand.UsageCommand.class,
                 ReportCommand.BillingCommand.class,
-                ReportCommand.PrometheusCommand.class
+                ReportCommand.PrometheusCommand.class,
+                ReportCommand.BudgetCommand.class,
+                ReportCommand.CostEstimateCommand.class
         }
 )
 public class ReportCommand implements Runnable {
@@ -62,6 +64,57 @@ public class ReportCommand implements Runnable {
             CliSupport.requireNonBlank(rateCard, "rate-card");
             List<UsageReportRow> rows = reportCommand.parent.createContext().governanceService().billingReport(Path.of(rateCard));
             printTable(rows, true);
+            return 0;
+        }
+    }
+
+    @Command(name = "budget", description = "Create a FinOps budget alert from recent GPU-hour usage")
+    static class BudgetCommand implements Callable<Integer> {
+        @ParentCommand private ReportCommand reportCommand;
+        @Option(names = "--name", required = true) private String name;
+        @Option(names = "--owner", required = true) private String owner;
+        @Option(names = "--budget", required = true) private Double budget;
+        @Option(names = "--rate-per-gpu-hour", defaultValue = "1.0") private Double ratePerGpuHour;
+        @Option(names = "--window-hours", defaultValue = "720") private Integer windowHours;
+
+        @Override public Integer call() {
+            CliSupport.require(budget != null && budget > 0.0, "budget must be > 0");
+            CliSupport.require(ratePerGpuHour != null && ratePerGpuHour > 0.0, "rate-per-gpu-hour must be > 0");
+            CliSupport.requirePositive(windowHours, "window-hours");
+            var record = reportCommand.parent.createContext().enterpriseOpsService()
+                    .budgetAlert(name, owner, budget, ratePerGpuHour, windowHours);
+            System.out.printf("Budget alert %s id=%s status=%s projectedCost=%s budget=%s%n",
+                    record.name(),
+                    record.id(),
+                    record.status(),
+                    record.metadata().get("projectedCost"),
+                    record.metadata().get("budget"));
+            return 0;
+        }
+    }
+
+    @Command(name = "cost-estimate", description = "Estimate job cost before allocation or at CLI exit")
+    static class CostEstimateCommand implements Callable<Integer> {
+        @ParentCommand private ReportCommand reportCommand;
+        @Option(names = "--owner", required = true) private String owner;
+        @Option(names = "--gpu-model", required = true) private String gpuModel;
+        @Option(names = "--gpus", required = true) private Integer gpus;
+        @Option(names = "--hours", required = true) private Double hours;
+        @Option(names = "--rate-per-gpu-hour", required = true) private Double ratePerGpuHour;
+
+        @Override public Integer call() {
+            CliSupport.requirePositive(gpus, "gpus");
+            CliSupport.require(hours != null && hours > 0.0, "hours must be > 0");
+            CliSupport.require(ratePerGpuHour != null && ratePerGpuHour > 0.0, "rate-per-gpu-hour must be > 0");
+            var estimate = reportCommand.parent.createContext().enterpriseOpsService()
+                    .costEstimate(owner, gpuModel, gpus, hours, ratePerGpuHour);
+            System.out.printf("Estimated cost for %s: %.2f (%d x %.2fh x %.2f on %s)%n",
+                    estimate.owner(),
+                    estimate.estimatedCost(),
+                    estimate.gpus(),
+                    estimate.hours(),
+                    estimate.ratePerGpuHour(),
+                    estimate.gpuModel());
             return 0;
         }
     }

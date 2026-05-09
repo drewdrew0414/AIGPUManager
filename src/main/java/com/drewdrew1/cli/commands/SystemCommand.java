@@ -5,6 +5,10 @@ import com.drewdrew1.cli.CliSupport;
 import com.drewdrew1.cli.GpuMgrCommand;
 import com.drewdrew1.App;
 import com.drewdrew1.core.config.ConfigLoader;
+import com.drewdrew1.core.model.AllocationRecord;
+import com.drewdrew1.core.model.GpuDevice;
+import com.drewdrew1.core.model.OpsRecord;
+import com.drewdrew1.core.service.HealthScoringService;
 import com.drewdrew1.infra.executor.CommandExecutionException;
 import com.drewdrew1.infra.executor.CommandResult;
 import com.github.freva.asciitable.AsciiTable;
@@ -21,10 +25,15 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 
 /** Exposes system maintenance, health, backup, and database operations. */
@@ -36,6 +45,7 @@ import java.util.concurrent.Callable;
                 SystemCommand.ConfigCommand.class,
                 SystemCommand.DbCheckCommand.class,
                 SystemCommand.HealthCommand.class,
+                SystemCommand.SafetyCommand.class,
                 SystemCommand.BackupCommand.class,
                 SystemCommand.RestoreCommand.class,
                 SystemCommand.UpdateCommand.class
@@ -187,6 +197,139 @@ public class SystemCommand implements Runnable {
                 return result.isSuccess() ? "ok" : "error";
             } catch (CommandExecutionException e) {
                 return "missing";
+            }
+        }
+    }
+
+    @Command(
+            name = "safety",
+            description = "Preflight safety checks, guardrail policy, and incident records",
+            subcommands = {
+                    SafetyCommand.CheckCommand.class,
+                    SafetyCommand.PolicyCommand.class,
+                    SafetyCommand.LimitsCommand.class,
+                    SafetyCommand.IncidentCommand.class
+            }
+    )
+    static class SafetyCommand implements Runnable {
+        @ParentCommand private SystemCommand systemCommand;
+        @Spec private CommandSpec spec;
+        @Override public void run() { spec.commandLine().usage(System.out); }
+
+        @Command(name = "check", description = "Run production safety preflight checks")
+        static class CheckCommand implements Callable<Integer> {
+            @ParentCommand private SafetyCommand safetyCommand;
+            @Option(names = "--quarantine", description = "Apply quarantine attributes for GPUs below the configured score") private boolean quarantine;
+            @Option(names = "--fail-on-warn", description = "Return a non-zero exit code for warning or critical findings") private boolean failOnWarn;
+
+            @Override public Integer call() throws Exception {
+                SystemCommand systemCommand = safetyCommand.systemCommand;
+                SafetyPolicy policy = loadSafetyPolicy(systemCommand);
+                List<SafetyFinding> findings = collectSafetyFindings(systemCommand, policy);
+                if (quarantine) {
+                    int changed = systemCommand.context().healthScoringService()
+                            .applyQuarantine(systemCommand.context().config().getMonitoring().getQuarantineScoreThreshold());
+                    findings.add(new SafetyFinding("gpu-quarantine", changed > 0 ? "WARN" : "OK",
+                            "quarantined=" + changed,
+                            "GPUs below health-score threshold are marked unschedulable."));
+                }
+                printFindings(findings);
+                long critical = findings.stream().filter(finding -> "CRITICAL".equals(finding.severity())).count();
+                long warn = findings.stream().filter(finding -> "WARN".equals(finding.severity())).count();
+                System.out.printf("Safety summary: critical=%d warn=%d ok=%d%n",
+                        critical,
+                        warn,
+                        findings.size() - critical - warn);
+                return failOnWarn && (critical > 0 || warn > 0) ? 2 : 0;
+            }
+        }
+
+        @Command(name = "policy", description = "Store cluster safety guardrail limits")
+        static class PolicyCommand implements Callable<Integer> {
+            @ParentCommand private SafetyCommand safetyCommand;
+            @Option(names = "--name", defaultValue = "production-guard") private String name;
+            @Option(names = "--max-gpus-per-request") private Integer maxGpusPerRequest;
+            @Option(names = "--max-lease-hours") private Integer maxLeaseHours;
+            @Option(names = "--thermal-warn-c") private Double thermalWarnC;
+            @Option(names = "--thermal-critical-c") private Double thermalCriticalC;
+            @Option(names = "--min-free-vram-ratio") private Double minFreeVramRatio;
+            @Option(names = "--max-power-limit-w") private Integer maxPowerLimitW;
+            @Option(names = "--min-disk-free-gb") private Long minDiskFreeGb;
+            @Option(names = "--heartbeat-stale-sec") private Integer heartbeatStaleSec;
+            @Option(names = "--max-job-shm-gb") private Integer maxJobShmGb;
+
+            @Override public Integer call() {
+                SystemCommand systemCommand = safetyCommand.systemCommand;
+                SafetyPolicy current = loadSafetyPolicy(systemCommand);
+                SafetyPolicy policy = new SafetyPolicy(
+                        value(maxGpusPerRequest, current.maxGpusPerRequest()),
+                        value(maxLeaseHours, current.maxLeaseHours()),
+                        value(thermalWarnC, current.thermalWarnC()),
+                        value(thermalCriticalC, current.thermalCriticalC()),
+                        value(minFreeVramRatio, current.minFreeVramRatio()),
+                        value(maxPowerLimitW, current.maxPowerLimitW()),
+                        value(minDiskFreeGb, current.minDiskFreeGb()),
+                        value(heartbeatStaleSec, current.heartbeatStaleSec()),
+                        value(maxJobShmGb, current.maxJobShmGb())
+                );
+                validatePolicy(policy);
+                OpsRecord record = systemCommand.context().enterpriseOpsService().record(
+                        "system",
+                        "safety-policy",
+                        name,
+                        CliSupport.currentActor(),
+                        "cluster",
+                        "ACTIVE",
+                        policy.toMetadata()
+                );
+                System.out.printf("Safety policy saved: %s%n", record.id());
+                printPolicy(policy);
+                return 0;
+            }
+        }
+
+        @Command(name = "limits", description = "Show effective safety limits")
+        static class LimitsCommand implements Callable<Integer> {
+            @ParentCommand private SafetyCommand safetyCommand;
+            @Override public Integer call() {
+                printPolicy(loadSafetyPolicy(safetyCommand.systemCommand));
+                return 0;
+            }
+        }
+
+        @Command(name = "incident", description = "Record a safety incident and optionally drain/quarantine")
+        static class IncidentCommand implements Callable<Integer> {
+            @ParentCommand private SafetyCommand safetyCommand;
+            @Option(names = "--node", required = true) private String node;
+            @Option(names = "--gpu-id") private String gpuId;
+            @Option(names = "--severity", defaultValue = "warning") private String severity;
+            @Option(names = "--action", defaultValue = "note", description = "note, quarantine, drain, or disable-scheduling") private String action;
+            @Option(names = "--message", required = true) private String message;
+
+            @Override public Integer call() {
+                CliSupport.requireOneOf(severity, "severity", Set.of("info", "warning", "critical"));
+                CliSupport.requireOneOf(action, "action", Set.of("note", "quarantine", "drain", "disable-scheduling"));
+                SystemCommand systemCommand = safetyCommand.systemCommand;
+                if ("quarantine".equalsIgnoreCase(action)) {
+                    CliSupport.requireNonBlank(gpuId, "gpu-id");
+                    systemCommand.context().inventoryRepository().putNodeAttribute(node, HealthScoringService.gpuQuarantineKey(gpuId), "true");
+                    systemCommand.context().inventoryRepository().putNodeAttribute(node, HealthScoringService.gpuQuarantineKey(gpuId) + ".reason", message);
+                } else if ("drain".equalsIgnoreCase(action) || "disable-scheduling".equalsIgnoreCase(action)) {
+                    systemCommand.context().inventoryRepository().putNodeAttribute(node, "state.drained", "true");
+                    systemCommand.context().inventoryRepository().putNodeAttribute(node, "state.drained.reason", message);
+                }
+                OpsRecord record = systemCommand.context().enterpriseOpsService().record(
+                        "system",
+                        "incident",
+                        node,
+                        CliSupport.currentActor(),
+                        gpuId == null ? node : node + ":" + gpuId,
+                        severity.toUpperCase(Locale.ROOT),
+                        mapOf("node", node, "gpuId", gpuId, "action", action, "message", message)
+                );
+                System.out.printf("Safety incident recorded: %s%n", record.id());
+                System.out.printf("Action: %s%n", action);
+                return 0;
             }
         }
     }
@@ -367,5 +510,203 @@ public class SystemCommand implements Runnable {
             }
         }
         return true;
+    }
+
+    private static SafetyPolicy loadSafetyPolicy(SystemCommand systemCommand) {
+        SafetyPolicy defaults = new SafetyPolicy(
+                128,
+                720,
+                systemCommand.context().config().getMonitoring().getThermalWarnC(),
+                systemCommand.context().config().getMonitoring().getThermalCriticalC(),
+                0.02,
+                2000,
+                2,
+                120,
+                512
+        );
+        List<OpsRecord> records = systemCommand.context().opsRepository().list("system", "safety-policy");
+        if (records.isEmpty()) {
+            return defaults;
+        }
+        Map<String, String> metadata = records.getFirst().metadata();
+        return new SafetyPolicy(
+                intValue(metadata, "maxGpusPerRequest", defaults.maxGpusPerRequest()),
+                intValue(metadata, "maxLeaseHours", defaults.maxLeaseHours()),
+                doubleValue(metadata, "thermalWarnC", defaults.thermalWarnC()),
+                doubleValue(metadata, "thermalCriticalC", defaults.thermalCriticalC()),
+                doubleValue(metadata, "minFreeVramRatio", defaults.minFreeVramRatio()),
+                intValue(metadata, "maxPowerLimitW", defaults.maxPowerLimitW()),
+                longValue(metadata, "minDiskFreeGb", defaults.minDiskFreeGb()),
+                intValue(metadata, "heartbeatStaleSec", defaults.heartbeatStaleSec()),
+                intValue(metadata, "maxJobShmGb", defaults.maxJobShmGb())
+        );
+    }
+
+    private static List<SafetyFinding> collectSafetyFindings(SystemCommand systemCommand, SafetyPolicy policy) throws Exception {
+        List<SafetyFinding> findings = new ArrayList<>();
+        List<GpuDevice> gpus = systemCommand.context().inventoryRepository().listGpus();
+        if (gpus.isEmpty()) {
+            findings.add(new SafetyFinding("gpu-inventory", "WARN", "no GPU inventory", "Run gpum node scan before allocation."));
+        }
+        for (GpuDevice gpu : gpus) {
+            String target = gpu.nodeHostname() + ":" + CliSupport.safe(gpu.deviceId());
+            if (gpu.temperatureC() != null && gpu.temperatureC() >= policy.thermalCriticalC()) {
+                findings.add(new SafetyFinding(target, "CRITICAL", "temperature=" + gpu.temperatureC() + "C", "Drain node and inspect cooling before scheduling."));
+            } else if (gpu.temperatureC() != null && gpu.temperatureC() >= policy.thermalWarnC()) {
+                findings.add(new SafetyFinding(target, "WARN", "temperature=" + gpu.temperatureC() + "C", "Watch thermals and avoid new high-power jobs."));
+            }
+            if (gpu.powerUsageW() != null && gpu.powerLimitW() != null && gpu.powerLimitW() > 0) {
+                double ratio = gpu.powerUsageW() / gpu.powerLimitW();
+                if (ratio >= 1.0) {
+                    findings.add(new SafetyFinding(target, "CRITICAL", "power at or above limit", "Preempt workload and check PSU/cooling headroom."));
+                } else if (ratio >= 0.98) {
+                    findings.add(new SafetyFinding(target, "WARN", "power near limit", "Avoid raising clocks or power cap."));
+                }
+            }
+            if (gpu.powerLimitW() != null && gpu.powerLimitW() > policy.maxPowerLimitW()) {
+                findings.add(new SafetyFinding(target, "WARN", "powerLimit=" + gpu.powerLimitW() + "W", "Configured limit is above policy max."));
+            }
+            if (gpu.vramTotalMb() != null && gpu.vramFreeMb() != null && gpu.vramTotalMb() > 0) {
+                double freeRatio = (double) gpu.vramFreeMb() / gpu.vramTotalMb();
+                if (freeRatio < policy.minFreeVramRatio()) {
+                    findings.add(new SafetyFinding(target, "WARN", "vram free ratio=" + String.format(Locale.ROOT, "%.3f", freeRatio), "Run zombie cleanup or stop leaking jobs."));
+                }
+            }
+        }
+        for (AllocationRecord allocation : systemCommand.context().allocationRepository().listActive()) {
+            if (allocation.requestedGpuCount() > policy.maxGpusPerRequest()) {
+                findings.add(new SafetyFinding(allocation.id(), "CRITICAL", "requested GPUs exceed policy", "Release or split the allocation."));
+            }
+            long leaseHours = Duration.between(allocation.createdAt(), allocation.expiresAt()).toHours();
+            if (leaseHours > policy.maxLeaseHours()) {
+                findings.add(new SafetyFinding(allocation.id(), "WARN", "lease hours=" + leaseHours, "Shorten lease or require approval."));
+            }
+            if (allocation.expiresAt().isBefore(Instant.now())) {
+                findings.add(new SafetyFinding(allocation.id(), "CRITICAL", "active allocation already expired", "Run gpum alloc reap."));
+            }
+        }
+        long freeGb = Files.getFileStore(systemCommand.context().dbPath().toAbsolutePath().getParent())
+                .getUsableSpace() / 1024L / 1024L / 1024L;
+        if (freeGb < policy.minDiskFreeGb()) {
+            findings.add(new SafetyFinding("metadata-disk", "CRITICAL", "freeGb=" + freeGb, "Free disk before scans, backups, or telemetry writes."));
+        }
+        if ("1".equals(System.getenv("GPUM_ENABLE_HARDWARE_WRITE")) || Boolean.getBoolean("gpum.enableHardwareWrite")) {
+            findings.add(new SafetyFinding("hardware-write", "WARN", "enabled", "Keep hardware mutation enabled only during approved maintenance windows."));
+        }
+        for (OpsRecord heartbeat : systemCommand.context().opsRepository().list("server", "heartbeat")) {
+            long age = Duration.between(heartbeat.updatedAt(), Instant.now()).toSeconds();
+            if (age > policy.heartbeatStaleSec()) {
+                findings.add(new SafetyFinding(heartbeat.name(), "WARN", "heartbeat stale seconds=" + age, "Check node agent or network connectivity."));
+            }
+        }
+        if (findings.stream().noneMatch(finding -> !"OK".equals(finding.severity()))) {
+            findings.add(new SafetyFinding("cluster", "OK", "all checks passed", "No safety blockers found."));
+        }
+        return findings;
+    }
+
+    private static void printFindings(List<SafetyFinding> findings) {
+        List<String[]> rows = new ArrayList<>();
+        for (SafetyFinding finding : findings) {
+            rows.add(new String[]{finding.component(), finding.severity(), finding.status(), finding.recommendation()});
+        }
+        System.out.println(AsciiTable.getTable(
+                new String[]{"Component", "Severity", "Status", "Recommendation"},
+                rows.toArray(String[][]::new)
+        ));
+    }
+
+    private static void printPolicy(SafetyPolicy policy) {
+        List<String[]> rows = List.of(
+                new String[]{"maxGpusPerRequest", Integer.toString(policy.maxGpusPerRequest())},
+                new String[]{"maxLeaseHours", Integer.toString(policy.maxLeaseHours())},
+                new String[]{"thermalWarnC", Double.toString(policy.thermalWarnC())},
+                new String[]{"thermalCriticalC", Double.toString(policy.thermalCriticalC())},
+                new String[]{"minFreeVramRatio", Double.toString(policy.minFreeVramRatio())},
+                new String[]{"maxPowerLimitW", Integer.toString(policy.maxPowerLimitW())},
+                new String[]{"minDiskFreeGb", Long.toString(policy.minDiskFreeGb())},
+                new String[]{"heartbeatStaleSec", Integer.toString(policy.heartbeatStaleSec())},
+                new String[]{"maxJobShmGb", Integer.toString(policy.maxJobShmGb())}
+        );
+        System.out.println(AsciiTable.getTable(new String[]{"Limit", "Value"}, rows.toArray(String[][]::new)));
+    }
+
+    private static void validatePolicy(SafetyPolicy policy) {
+        CliSupport.requireRange(policy.maxGpusPerRequest(), 1, 4096, "max-gpus-per-request");
+        CliSupport.requireRange(policy.maxLeaseHours(), 1, 8760, "max-lease-hours");
+        CliSupport.require(policy.thermalWarnC() > 0 && policy.thermalWarnC() < policy.thermalCriticalC(),
+                "thermal-warn-c must be positive and lower than thermal-critical-c");
+        CliSupport.require(policy.thermalCriticalC() <= 110.0, "thermal-critical-c must be <= 110");
+        CliSupport.require(policy.minFreeVramRatio() >= 0.0 && policy.minFreeVramRatio() <= 1.0,
+                "min-free-vram-ratio must be between 0 and 1");
+        CliSupport.requireRange(policy.maxPowerLimitW(), 1, 2000, "max-power-limit-w");
+        CliSupport.require(policy.minDiskFreeGb() >= 0L && policy.minDiskFreeGb() <= 1_000_000L,
+                "min-disk-free-gb must be between 0 and 1000000");
+        CliSupport.requireRange(policy.heartbeatStaleSec(), 1, 86_400, "heartbeat-stale-sec");
+        CliSupport.requireRange(policy.maxJobShmGb(), 1, 4096, "max-job-shm-gb");
+    }
+
+    private static Integer value(Integer value, int fallback) {
+        return value == null ? fallback : value;
+    }
+
+    private static Long value(Long value, long fallback) {
+        return value == null ? fallback : value;
+    }
+
+    private static Double value(Double value, double fallback) {
+        return value == null ? fallback : value;
+    }
+
+    private static int intValue(Map<String, String> metadata, String key, int fallback) {
+        String value = metadata.get(key);
+        return value == null || value.isBlank() ? fallback : Integer.parseInt(value);
+    }
+
+    private static long longValue(Map<String, String> metadata, String key, long fallback) {
+        String value = metadata.get(key);
+        return value == null || value.isBlank() ? fallback : Long.parseLong(value);
+    }
+
+    private static double doubleValue(Map<String, String> metadata, String key, double fallback) {
+        String value = metadata.get(key);
+        return value == null || value.isBlank() ? fallback : Double.parseDouble(value);
+    }
+
+    private static Map<String, String> mapOf(String... values) {
+        Map<String, String> map = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < values.length; i += 2) {
+            map.put(values[i], values[i + 1] == null ? "" : values[i + 1]);
+        }
+        return map;
+    }
+
+    private record SafetyPolicy(
+            int maxGpusPerRequest,
+            int maxLeaseHours,
+            double thermalWarnC,
+            double thermalCriticalC,
+            double minFreeVramRatio,
+            int maxPowerLimitW,
+            long minDiskFreeGb,
+            int heartbeatStaleSec,
+            int maxJobShmGb
+    ) {
+        Map<String, String> toMetadata() {
+            return mapOf(
+                    "maxGpusPerRequest", Integer.toString(maxGpusPerRequest),
+                    "maxLeaseHours", Integer.toString(maxLeaseHours),
+                    "thermalWarnC", Double.toString(thermalWarnC),
+                    "thermalCriticalC", Double.toString(thermalCriticalC),
+                    "minFreeVramRatio", Double.toString(minFreeVramRatio),
+                    "maxPowerLimitW", Integer.toString(maxPowerLimitW),
+                    "minDiskFreeGb", Long.toString(minDiskFreeGb),
+                    "heartbeatStaleSec", Integer.toString(heartbeatStaleSec),
+                    "maxJobShmGb", Integer.toString(maxJobShmGb)
+            );
+        }
+    }
+
+    private record SafetyFinding(String component, String severity, String status, String recommendation) {
     }
 }

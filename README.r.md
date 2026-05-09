@@ -1,16 +1,209 @@
-# gpum v1.0.1
+# gpum v1.1.0
 
-Second public release of `gpum`, a multi-vendor GPU inventory, allocation, governance, and runtime operations CLI for AI training and inference servers.
+Production operations release of `gpum`, a multi-vendor GPU inventory, allocation, governance, runtime, scheduling, data, and developer-experience CLI for AI training and inference servers.
 
 ## Release Summary
 
-`v1.0.1` moves `gpum` beyond inventory and allocation basics. This release adds guarded hardware control paths, RBAC approval workflow, AI runtime handoff, native telemetry probes, Prometheus export, Kubernetes manifest rendering/apply support, and a SQLite-backed worker runtime layer.
+`v1.1.0` adds the practical platform features needed to operate GPU clusters beyond simple inventory and allocation. It introduces production-oriented command groups for compute policy, multi-level scheduling, data movement, batch jobs, interactive sessions, alert policies, secret references, and developer tooling.
 
-The core direction is unchanged: `gpum` should be useful on a normal development machine, but structured enough to operate real GPU servers when vendor tooling and permissions are available.
+The implementation remains conservative: potentially destructive or environment-specific actions are preview-first and require `--execute` before external commands run.
 
 ---
 
-## Highlights
+## New in v1.1.0
+
+### 1. Compute Policy Layer
+
+New command group:
+
+- `gpum compute quota`
+- `gpum compute rdma`
+- `gpum compute accelerator register`
+- `gpum compute accelerator list`
+
+Included behavior:
+
+- CPU/RAM/PID quota plans for allocation-scoped workloads
+- Linux cgroup command plans using `cgcreate`, `cgset`, and `cgclassify`
+- Windows guidance path for Job Objects or container limits
+- RDMA/InfiniBand traffic-control policy plans
+- generic accelerator registry for NPU, TPU, LPU, FPGA, and custom endpoints
+
+### 2. Production Scheduling Layer
+
+New command group:
+
+- `gpum schedule queue create`
+- `gpum schedule queue list`
+- `gpum schedule reserve create`
+- `gpum schedule reserve list`
+- `gpum schedule reserve cancel`
+- `gpum schedule fair-share`
+- `gpum schedule gang`
+
+Included behavior:
+
+- tenant/project queue records with weights and max GPU caps
+- advance reservations with ISO-8601 start/end windows
+- fair-share scoring based on historical allocation GPU-hours
+- gang scheduling plans for distributed jobs that need all nodes before start
+- preemption plans for suspending lower-priority allocations and recording resume commands
+- best-fit, worst-fit, and topology-aware bin-packing simulation
+- backfill planning for short idle windows
+
+### 3. Data Management Layer
+
+New command group:
+
+- `gpum data cache`
+- `gpum data snapshot`
+- `gpum data checkpoint`
+
+Included behavior:
+
+- local NVMe cache sync plans for file paths, NFS-style paths, or `s3://` sources
+- immutable dataset snapshot records for reproducibility
+- checkpoint push plans for local or object-storage destinations
+- GPU Direct Storage readiness plans
+- dry-run default with external sync only under `--execute`
+
+### 4. Job and Session Orchestration
+
+New command group:
+
+- `gpum job batch`
+- `gpum job session`
+- `gpum job list`
+
+Included behavior:
+
+- batch job records and optional runtime worker submission
+- Docker, Apptainer, and Singularity execution plans
+- Docker GPU pass-through and shared-memory sizing options
+- interactive session plans for Jupyter, VS Code tunnel, and SSH
+- allocation-linked job metadata
+- zombie GPU process discovery and cleanup preview/execute path
+
+### 5. Observability Extensions
+
+New command group:
+
+- `gpum observe alert create`
+- `gpum observe alert list`
+- `gpum observe profile`
+
+Included behavior:
+
+- Slack, Teams, Email, and webhook alert policy records
+- telemetry collection policies and current Prometheus snapshot writes
+- centralized SQLite log streaming
+- profiler wrapper plans for NVIDIA Nsight Systems (`nsys`) and Nsight Compute (`ncu`)
+- shell profiler fallback for generic commands
+
+### 6. Secret References
+
+New command group:
+
+- `gpum secret put`
+- `gpum secret list`
+- `gpum secret render`
+
+`gpum` stores secret references, not raw secret values by default. Supported reference providers include Vault, Kubernetes secrets, environment variables, AWS, GCP, and Azure.
+
+### 7. Developer Experience
+
+New command group:
+
+- `gpum dev completion`
+- `gpum dev native`
+- `gpum dev python-sdk`
+
+Included behavior:
+
+- shell completion packaging hints
+- GraalVM native-image build plan
+- JLine3 terminal integration check
+- generated lightweight Python SDK wrapper for invoking `gpum`
+
+### 8. Java Server Architecture
+
+New command group:
+
+- `gpum server run`
+- `gpum server health`
+- `gpum server resources`
+- `gpum server allocate`
+- `gpum server release`
+- `gpum server submit`
+- `gpum server heartbeat`
+- `gpum server telemetry`
+- `gpum server storage`
+
+Included behavior:
+
+- Java 21 virtual-thread-backed gRPC server runtime
+- `gpum.v1.GpumControl` protocol specification in `src/main/proto/gpum.proto`
+- health endpoint for CLI/server communication checks
+- resource summary endpoint for node/GPU/allocation/ops-record counts
+- allocation planning endpoint for remote dry-run style planning
+- server-side allocation lease creation with tenant, owner, model, VRAM, label selector, priority, preemptible, exclusive-node, and affinity fields
+- allocation release endpoint for centralized lease cleanup
+- remote batch job submission plans bound to allocation IDs, including Docker/Apptainer/Singularity engine, GPU pass-through, and shared-memory sizing
+- node heartbeat endpoint for worker/node liveness and allocatable GPU reporting
+- bidirectional telemetry stream endpoint
+- optional PostgreSQL and Redis backend readiness checks
+- Redis distributed lock acquire/release helper for race-condition prevention
+
+Backend environment variables:
+
+- `GPUM_POSTGRES_URL`
+- `GPUM_POSTGRES_USER`
+- `GPUM_POSTGRES_PASSWORD`
+- `GPUM_REDIS_URL`
+
+SQLite remains the default local persistence path. PostgreSQL and Redis support is introduced as server-mode readiness and integration plumbing for production deployments.
+
+### 9. Unified Ops Persistence
+
+New SQLite-backed operational record store:
+
+- compute quota and RDMA policies
+- model-specific GPU quotas such as tenant/model/maxGpus
+- accelerator registry entries
+- scheduling queues and reservations
+- gang scheduling plans
+- dataset cache, snapshot, and checkpoint records
+- batch jobs and sessions
+- alert policies and profile runs
+- telemetry policies and budget alerts
+- job cost estimates from GPU model, duration, count, and hourly rate
+- secret references
+
+All records are stored in `ops_records`.
+
+### 10. Safety Guardrails
+
+New command group:
+
+- `gpum system safety limits`
+- `gpum system safety policy`
+- `gpum system safety check`
+- `gpum system safety incident`
+
+Included behavior:
+
+- cluster-wide safety policy for max GPUs per request, max lease hours, thermal thresholds, power cap ceiling, minimum free VRAM ratio, disk headroom, stale heartbeat seconds, and max job shared-memory size
+- allocation and remote server allocation checks against the active safety policy
+- batch job engine and shared-memory validation before execution plans are recorded
+- dependent execution commands validate referenced allocations before recording or executing job, session, profile, quota, and preemption work
+- compute limits reject runaway CPU, memory, PID, RDMA bandwidth, and model quota values before persistence
+- parse and execution failures use consistent `ERROR` and `HINT` output
+- preflight detection for thermal critical GPUs, power saturation, stale heartbeats, expired active leases, low metadata disk space, and hardware-write opt-in left enabled
+- incident records with optional GPU quarantine or node drain actions
+
+---
+
+## Included v1.1.0 Hardware and Runtime Highlights
 
 ### 1. Guarded GPU Hardware Control
 
@@ -195,7 +388,7 @@ Process cleanup is local-node and PID-scoped, with safety checks.
 
 ### 9. Partition Apply Path
 
-Partition records remain cross-vendor, but `v1.0.1` adds guarded NVIDIA MIG apply support where the device already advertises MIG capability.
+Partition records remain cross-vendor, and guarded NVIDIA MIG apply support is available where the device already advertises MIG capability.
 
 Commands:
 
@@ -223,9 +416,9 @@ MIG mode enable/disable is still intentionally manual.
 
 ---
 
-## Existing v1.0.0 Features Retained
+## v1.1.0 Baseline Features Retained
 
-`v1.0.1` keeps the original public surface:
+`v1.1.0` keeps the original public surface:
 
 - NVIDIA / AMD / Intel inventory
 - Windows Intel display-adapter fallback detection
@@ -239,6 +432,18 @@ MIG mode enable/disable is still intentionally manual.
 - SQLite persistence
 - Windows and Linux launchers
 - GitHub Release oriented install scripts
+
+---
+
+## Version Alignment
+
+All release-facing version identifiers are aligned to `v1.1.0`:
+
+- Gradle project version: `1.1.0`
+- CLI version output: `gpum 1.1.0`
+- generated distribution version file: `1.1.0`
+- release note title: `gpum v1.1.0`
+- README release summary: `v1.1.0`
 
 ---
 
@@ -275,11 +480,11 @@ Distribution bundle:
 - Existing SQLite data remains the expected persistence path: `data/gpu-mgr.db`.
 - RBAC approval tables and runtime worker tables are created by the SQLite repositories as needed.
 - Remote hardware apply requires a registered remote node and a usable remote `gpum` command path.
-- `gpum --version` should report `gpum 1.0.1` for this release.
+- `gpum --version` should report `gpum 1.1.0` for this release.
 
 ---
 
-## Known Limits in v1.0.1
+## Known Limits in v1.1.0
 
 Still conservative or partial:
 
@@ -299,7 +504,7 @@ Still conservative or partial:
 ## Suggested Release Title
 
 ```text
-gpum v1.0.1
+gpum v1.1.0
 ```
 
 ## Recommended Release Assets

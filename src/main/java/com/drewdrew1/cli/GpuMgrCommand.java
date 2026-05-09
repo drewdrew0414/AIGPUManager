@@ -4,16 +4,24 @@ import com.drewdrew1.core.config.ConfigLoader;
 import com.drewdrew1.core.config.GpumConfig;
 import com.drewdrew1.cli.commands.AllocCommand;
 import com.drewdrew1.cli.commands.AuditCommand;
+import com.drewdrew1.cli.commands.ComputeCommand;
+import com.drewdrew1.cli.commands.DataCommand;
+import com.drewdrew1.cli.commands.DevCommand;
 import com.drewdrew1.cli.commands.GpuCommand;
 import com.drewdrew1.cli.commands.IntegrationCommand;
+import com.drewdrew1.cli.commands.JobCommand;
 import com.drewdrew1.cli.commands.LogCommand;
 import com.drewdrew1.cli.commands.NodeCommand;
+import com.drewdrew1.cli.commands.ObserveCommand;
 import com.drewdrew1.cli.commands.PartCommand;
 import com.drewdrew1.cli.commands.QueueCommand;
 import com.drewdrew1.cli.commands.QuotaCommand;
 import com.drewdrew1.cli.commands.ReportCommand;
 import com.drewdrew1.cli.commands.RbacCommand;
 import com.drewdrew1.cli.commands.RuntimeCommand;
+import com.drewdrew1.cli.commands.ScheduleCommand;
+import com.drewdrew1.cli.commands.SecretCommand;
+import com.drewdrew1.cli.commands.ServerCommand;
 import com.drewdrew1.cli.commands.SystemCommand;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -27,21 +35,29 @@ import java.time.Duration;
 @Command(
         name = "gpum",
         mixinStandardHelpOptions = true,
-        version = "gpum 1.0.1",
+        version = "gpum 1.1.0",
         description = "GPU inventory and resource management CLI",
         subcommands = {
                 NodeCommand.class,
                 GpuCommand.class,
                 AllocCommand.class,
+                ComputeCommand.class,
+                ScheduleCommand.class,
+                DataCommand.class,
+                JobCommand.class,
                 PartCommand.class,
                 QueueCommand.class,
                 QuotaCommand.class,
                 AuditCommand.class,
                 LogCommand.class,
+                ObserveCommand.class,
                 IntegrationCommand.class,
                 ReportCommand.class,
                 RbacCommand.class,
                 RuntimeCommand.class,
+                SecretCommand.class,
+                DevCommand.class,
+                ServerCommand.class,
                 SystemCommand.class
         }
 )

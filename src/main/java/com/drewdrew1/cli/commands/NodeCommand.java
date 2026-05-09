@@ -45,7 +45,7 @@ import java.util.concurrent.Callable;
                 NodeCommand.RemoteCommand.class
         }
 )
-public class NodeCommand implements Runnable {
+public class  NodeCommand implements Runnable {
     private static final DateTimeFormatter TS_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault());
 

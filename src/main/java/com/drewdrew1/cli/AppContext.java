@@ -7,12 +7,14 @@ import com.drewdrew1.core.repository.AllocationRepository;
 import com.drewdrew1.core.repository.GovernanceRepository;
 import com.drewdrew1.core.repository.InventoryRepository;
 import com.drewdrew1.core.repository.LogRepository;
+import com.drewdrew1.core.repository.OpsRepository;
 import com.drewdrew1.core.repository.RuntimeRepository;
 import com.drewdrew1.core.service.AllocationService;
 import com.drewdrew1.core.service.AccessControlService;
 import com.drewdrew1.core.service.AuditService;
 import com.drewdrew1.core.service.CapabilityResolver;
 import com.drewdrew1.core.service.ContainerReconcileService;
+import com.drewdrew1.core.service.EnterpriseOpsService;
 import com.drewdrew1.core.service.GovernanceService;
 import com.drewdrew1.core.service.GpuControlService;
 import com.drewdrew1.core.service.GpuProcessService;
@@ -27,6 +29,7 @@ import com.drewdrew1.core.service.PrometheusExportService;
 import com.drewdrew1.core.service.RemoteGpuControlService;
 import com.drewdrew1.core.service.RemoteSystemInfoService;
 import com.drewdrew1.core.service.RuntimeWorkerService;
+import com.drewdrew1.core.service.SchedulingEngineService;
 import com.drewdrew1.core.service.SystemInfoService;
 import com.drewdrew1.core.service.WorkloadProfileService;
 import com.drewdrew1.infra.detector.AmdDetector;
@@ -41,6 +44,7 @@ import com.drewdrew1.infra.persistence.SqliteAuditRepository;
 import com.drewdrew1.infra.persistence.SqliteGovernanceRepository;
 import com.drewdrew1.infra.persistence.SqliteInventoryRepository;
 import com.drewdrew1.infra.persistence.SqliteLogRepository;
+import com.drewdrew1.infra.persistence.SqliteOpsRepository;
 import com.drewdrew1.infra.persistence.SqliteRuntimeRepository;
 
 import java.nio.file.Path;
@@ -57,6 +61,7 @@ public class AppContext {
     private AuditRepository auditRepository;
     private GovernanceRepository governanceRepository;
     private LogRepository logRepository;
+    private OpsRepository opsRepository;
     private RuntimeRepository runtimeRepository;
     private TablePrinter tablePrinter;
     private SystemInfoService systemInfoService;
@@ -76,7 +81,9 @@ public class AppContext {
     private WorkloadProfileService workloadProfileService;
     private NativeGpuTelemetryService nativeGpuTelemetryService;
     private RuntimeWorkerService runtimeWorkerService;
+    private SchedulingEngineService schedulingEngineService;
     private ContainerReconcileService containerReconcileService;
+    private EnterpriseOpsService enterpriseOpsService;
 
     public AppContext(Path dbPath, Duration commandTimeout, GpumConfig config) {
         this.dbPath = dbPath;
@@ -160,6 +167,13 @@ public class AppContext {
             runtimeRepository = new SqliteRuntimeRepository(dbPath);
         }
         return runtimeRepository;
+    }
+
+    public OpsRepository opsRepository() {
+        if (opsRepository == null) {
+            opsRepository = new SqliteOpsRepository(dbPath);
+        }
+        return opsRepository;
     }
 
     public LogService logService() {
@@ -310,10 +324,29 @@ public class AppContext {
         return runtimeWorkerService;
     }
 
+    public SchedulingEngineService schedulingEngineService() {
+        if (schedulingEngineService == null) {
+            schedulingEngineService = new SchedulingEngineService(inventoryRepository(), allocationRepository());
+        }
+        return schedulingEngineService;
+    }
+
     public ContainerReconcileService containerReconcileService() {
         if (containerReconcileService == null) {
             containerReconcileService = new ContainerReconcileService(commandExecutor(), allocationRepository(), config);
         }
         return containerReconcileService;
+    }
+
+    public EnterpriseOpsService enterpriseOpsService() {
+        if (enterpriseOpsService == null) {
+            enterpriseOpsService = new EnterpriseOpsService(
+                    opsRepository(),
+                    allocationRepository(),
+                    runtimeWorkerService(),
+                    commandExecutor()
+            );
+        }
+        return enterpriseOpsService;
     }
 }

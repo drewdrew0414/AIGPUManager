@@ -1,5 +1,6 @@
 package com.drewdrew1.cli;
 
+import com.drewdrew1.App;
 import com.drewdrew1.core.model.AllocationRecord;
 import com.drewdrew1.infra.persistence.SqliteAllocationRepository;
 import com.drewdrew1.infra.persistence.SqliteInventoryRepository;
@@ -14,6 +15,7 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -32,6 +34,11 @@ class CliCommandMatrixTest {
         dbPath = tempDir.resolve("gpum-cli.db");
         SqliteInventoryRepository inventoryRepository = new SqliteInventoryRepository(dbPath);
         TestInventoryFixtures.seedMixedFleet(inventoryRepository);
+    }
+
+    @Test
+    void everyRegisteredCommandPrintsHelp() {
+        assertHelpTree(App.createCommandLine(), new ArrayList<>());
     }
 
     @Test
@@ -108,6 +115,7 @@ class CliCommandMatrixTest {
         assertEquals(0, execute("integration", "ai", "preset", "render", "--allocation-id", record.id(), "--name", "torchrun-ddp", "--entrypoint", "train.py").exitCode());
         assertEquals(0, execute("integration", "k8s", "submit", "--name", "trainer", "--image", "repo/train:latest", "--allocation-id", record.id()).exitCode());
         assertEquals(0, execute("runtime", "native", "metrics").exitCode());
+        assertEquals(0, execute("runtime", "zombie", "clean", "--gpu-id", "0").exitCode());
         assertEquals(0, execute("runtime", "worker", "register", "--id", "worker-matrix", "--allocation-id", record.id(), "--command", "echo ok",
                 "--checkpoint-command", "echo checkpoint", "--restore-command", "echo restore").exitCode());
         assertEquals(0, execute("runtime", "worker", "list").exitCode());
@@ -191,6 +199,88 @@ class CliCommandMatrixTest {
     }
 
     @Test
+    void executesEnterpriseOpsCommandsAgainstFixtureInventory() {
+        CommandCapture create = execute("alloc", "request", "--gpus", "1", "--vram", "60000", "--hours", "2", "--dry-run");
+        assertEquals(0, create.exitCode());
+        CommandCapture allocation = execute("alloc", "request", "--gpus", "1", "--vram", "60000", "--hours", "2");
+        assertEquals(0, allocation.exitCode());
+        AllocationRecord record = new SqliteAllocationRepository(dbPath).listActive().getFirst();
+
+        assertEquals(0, execute("compute", "quota", "--allocation-id", record.id(), "--cpu-cores", "4", "--memory-mb", "32000", "--pids", "256").exitCode());
+        assertEquals(0, execute("compute", "model-quota", "--name", "team-a-v100", "--tenant", "team-a", "--gpu-model", "V100", "--max-gpus", "8").exitCode());
+        assertEquals(0, execute("compute", "rdma", "--name", "ib-fast", "--node", "nvidia-h-pool", "--device", "ib0", "--bandwidth-mbit", "100000", "--priority", "1").exitCode());
+        assertEquals(0, execute("compute", "accelerator", "register", "--name", "edge-npu", "--kind", "npu", "--driver", "vendor-npu", "--endpoint", "node-a:/dev/npu0").exitCode());
+        CommandCapture accelerators = execute("compute", "accelerator", "list");
+        assertEquals(0, accelerators.exitCode());
+        assertTrue(accelerators.stdout().contains("edge-npu"));
+
+        assertEquals(0, execute("schedule", "queue", "create", "--name", "research", "--tenant", "research", "--weight", "10", "--max-gpus", "8", "--preemptible").exitCode());
+        assertEquals(0, execute("schedule", "reserve", "create", "--name", "nightly", "--queue", "research", "--start", "2030-01-01T00:00:00Z", "--end", "2030-01-01T02:00:00Z", "--gpus", "4").exitCode());
+        assertEquals(0, execute("schedule", "fair-share", "--owner", System.getProperty("user.name", "unknown"), "--window-hours", "24").exitCode());
+        assertEquals(0, execute("schedule", "gang", "--name", "ddp", "--nodes", "2", "--gpus-per-node", "8").exitCode());
+        assertEquals(0, execute("schedule", "preempt", "--name", "urgent", "--victim-allocation-id", record.id(), "--incoming", "priority-train").exitCode());
+        assertEquals(0, execute("schedule", "place", "--gpus", "1", "--strategy", "best-fit").exitCode());
+        assertEquals(0, execute("schedule", "place", "--gpus", "1", "--strategy", "worst-fit").exitCode());
+        assertEquals(0, execute("schedule", "place", "--gpus", "1", "--strategy", "topology").exitCode());
+        assertEquals(0, execute("schedule", "backfill", "--queue", "research", "--max-minutes", "60", "--max-gpus", "4").exitCode());
+
+        assertEquals(0, execute("data", "cache", "--name", "imagenet", "--source", tempDir.toString(), "--target", tempDir.resolve("cache").toString()).exitCode());
+        assertEquals(0, execute("data", "snapshot", "--name", "imagenet-v1", "--source", "s3://datasets/imagenet", "--version", "v1", "--mount", tempDir.resolve("snap").toString()).exitCode());
+        assertEquals(0, execute("data", "checkpoint", "--name", "ckpt", "--source", tempDir.toString(), "--dest", tempDir.resolve("ckpt-copy").toString()).exitCode());
+        assertEquals(0, execute("data", "gds", "--name", "gds-datasets", "--mount", tempDir.resolve("gds").toString()).exitCode());
+
+        assertEquals(0, execute("job", "batch", "--name", "train", "--allocation-id", record.id(), "--command", "echo train").exitCode());
+        assertEquals(0, execute("job", "batch", "--name", "train-apptainer", "--allocation-id", record.id(), "--image", "train.sif", "--engine", "apptainer", "--command", "python train.py").exitCode());
+        assertEquals(0, execute("job", "session", "--name", "lab", "--allocation-id", record.id(), "--kind", "jupyter", "--port", "8899").exitCode());
+        assertEquals(0, execute("job", "list").exitCode());
+
+        assertEquals(0, execute("observe", "alert", "create", "--name", "slack-done", "--channel", "slack", "--target", "https://hooks.example", "--event", "job.done").exitCode());
+        assertEquals(0, execute("observe", "profile", "--name", "profile-train", "--allocation-id", record.id(), "--tool", "shell", "--command", "echo profile").exitCode());
+        assertEquals(0, execute("observe", "telemetry", "--name", "fast", "--interval-sec", "5", "--retention-hours", "24").exitCode());
+        assertEquals(0, execute("observe", "log-stream", "--lines", "5").exitCode());
+        assertEquals(0, execute("report", "budget", "--name", "budget", "--owner", System.getProperty("user.name", "unknown"), "--budget", "100", "--rate-per-gpu-hour", "2").exitCode());
+        assertEquals(0, execute("report", "cost-estimate", "--owner", System.getProperty("user.name", "unknown"), "--gpu-model", "H100", "--gpus", "2", "--hours", "4", "--rate-per-gpu-hour", "3.5").exitCode());
+
+        CommandCapture secretPut = execute("secret", "put", "--name", "wandb", "--provider", "env", "--ref", "WANDB_API_KEY", "--env", "WANDB_API_KEY");
+        assertEquals(0, secretPut.exitCode());
+        CommandCapture secretList = execute("secret", "list");
+        assertEquals(0, secretList.exitCode());
+        String secretId = extractId(secretList.stdout(), "ref-");
+        assertEquals(0, execute("secret", "render", "--id", secretId, "--format", "shell").exitCode());
+
+        assertEquals(0, execute("dev", "completion", "--shell", "bash").exitCode());
+        assertEquals(0, execute("dev", "native").exitCode());
+        assertEquals(0, execute("dev", "terminal").exitCode());
+        assertEquals(0, execute("dev", "python-sdk", "--output", tempDir.resolve("gpum_client.py").toString()).exitCode());
+        assertTrue(Files.exists(tempDir.resolve("gpum_client.py")));
+
+        assertEquals(0, execute("system", "safety", "limits").exitCode());
+        assertEquals(0, execute("system", "safety", "policy",
+                "--max-gpus-per-request", "2",
+                "--max-lease-hours", "48",
+                "--thermal-warn-c", "70",
+                "--thermal-critical-c", "85",
+                "--min-free-vram-ratio", "0.05",
+                "--max-power-limit-w", "900",
+                "--min-disk-free-gb", "0",
+                "--heartbeat-stale-sec", "300",
+                "--max-job-shm-gb", "64").exitCode());
+        assertEquals(0, execute("system", "safety", "check").exitCode());
+        assertEquals(0, execute("system", "safety", "incident",
+                "--node", "nvidia-h-pool",
+                "--gpu-id", "0",
+                "--severity", "warning",
+                "--action", "quarantine",
+                "--message", "matrix safety incident").exitCode());
+        CommandCapture overLimit = execute("alloc", "request", "--gpus", "3", "--vram", "60000", "--hours", "2", "--dry-run");
+        assertTrue(overLimit.exitCode() != 0);
+        assertTrue(overLimit.stderr().contains("gpus must be between"));
+
+        assertEquals(0, execute("server", "storage").exitCode());
+        assertEquals(0, execute("server", "run", "--port", "0", "--once").exitCode());
+    }
+
+    @Test
     void executesLocalNodeScanCommandsWithoutAssumingGpuHardware() {
         Path isolatedDb = tempDir.resolve("scan-only.db");
 
@@ -222,7 +312,7 @@ class CliCommandMatrixTest {
              PrintStream err = new PrintStream(stderr, true, StandardCharsets.UTF_8)) {
             System.setOut(out);
             System.setErr(err);
-            int exitCode = new CommandLine(new GpuMgrCommand()).execute(fullArgs);
+            int exitCode = App.createCommandLine().execute(fullArgs);
             out.flush();
             err.flush();
             return new CommandCapture(
@@ -244,5 +334,20 @@ class CliCommandMatrixTest {
         Matcher matcher = Pattern.compile(Pattern.quote(prefix) + "[A-Za-z0-9\\-]+").matcher(text);
         assertTrue(matcher.find(), "Expected id with prefix " + prefix + " in output:\n" + text);
         return matcher.group();
+    }
+
+    private void assertHelpTree(CommandLine commandLine, ArrayList<String> path) {
+        ArrayList<String> args = new ArrayList<>(path);
+        args.add("--help");
+        CommandCapture capture = execute(args.toArray(String[]::new));
+        assertEquals(0, capture.exitCode(), "help failed for " + String.join(" ", path) + "\n" + capture.stderr());
+        for (var entry : commandLine.getSubcommands().entrySet()) {
+            if ("help".equals(entry.getKey())) {
+                continue;
+            }
+            ArrayList<String> childPath = new ArrayList<>(path);
+            childPath.add(entry.getKey());
+            assertHelpTree(entry.getValue(), childPath);
+        }
     }
 }
