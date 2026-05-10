@@ -26,6 +26,7 @@ This page is the multilingual documentation hub for `gpum`.
 - [Installation](installation.md): Windows, Linux, macOS installation flow.
 - [Operating flow](operating-flow.md): how scan, safety, allocation, execution, monitoring, and reporting connect.
 - [Safety and limits](safety.md): thermal, power, memory, quota, fault, and exception prevention.
+- [Fleet intelligence](fleet.md): deep capacity, risk, validation, forecast, and doctor reports.
 - [All CLI command examples](commands.md): command examples with dummy values.
 - [Operational recipes](recipes.md): practical workflows for teams, reservations, jobs, and monitoring.
 - [Production operations](operations.md): production runbook, rollback, audit, and incident handling.

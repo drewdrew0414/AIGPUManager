@@ -12,6 +12,25 @@ The implementation remains conservative: potentially destructive or environment-
 
 ## New in v1.1.0
 
+### 0. Fleet Intelligence Layer
+
+New command group:
+
+- `gpum fleet capacity`
+- `gpum fleet risk`
+- `gpum fleet validate`
+- `gpum fleet forecast`
+- `gpum fleet doctor`
+
+Included behavior:
+
+- read-only node and model capacity reports with schedulable, allocated, quarantined, and free GPU counts
+- VRAM, utilization, temperature, power, topology, labels, and node blocker visibility
+- stale inventory, thermal, power, memory, allocation, runtime, governance, and observability risk findings
+- workload pre-submit validation for GPU count, VRAM, CPU, RAM, `/dev/shm`, image pinning, label selectors, and packed/spread placement
+- GPU-hour runway forecasting with utilization target, reserve ratio, job GPU-hour size, and daily demand
+- combined operator doctor report for handoff, incident review, and daily readiness checks
+
 ### 1. Compute Policy Layer
 
 New command group:

@@ -241,6 +241,43 @@ class CliCommandMatrixTest {
         assertEquals(0, execute("report", "budget", "--name", "budget", "--owner", System.getProperty("user.name", "unknown"), "--budget", "100", "--rate-per-gpu-hour", "2").exitCode());
         assertEquals(0, execute("report", "cost-estimate", "--owner", System.getProperty("user.name", "unknown"), "--gpu-model", "H100", "--gpus", "2", "--hours", "4", "--rate-per-gpu-hour", "3.5").exitCode());
 
+        CommandCapture fleetCapacity = execute("fleet", "capacity", "--by-model");
+        assertEquals(0, fleetCapacity.exitCode());
+        assertTrue(fleetCapacity.stdout().contains("freeGpus"));
+        assertTrue(fleetCapacity.stdout().contains("NVIDIA H100"));
+
+        CommandCapture fleetRisk = execute("fleet", "risk", "--max-scan-age-min", "1000000");
+        assertEquals(0, fleetRisk.exitCode());
+        assertTrue(fleetRisk.stdout().contains("Risk summary"));
+
+        CommandCapture fleetValidate = execute("fleet", "validate",
+                "--gpus", "1",
+                "--vram", "60000",
+                "--hours", "2",
+                "--cpu-cores", "8",
+                "--memory-mb", "64000",
+                "--shm-size", "16g",
+                "--model", "H100",
+                "--label-selector", "role=trainer",
+                "--strategy", "packed",
+                "--image", "repo/train:1.1.0",
+                "--command", "python train.py");
+        assertEquals(0, fleetValidate.exitCode());
+        assertTrue(fleetValidate.stdout().contains("Validation allowed=true"));
+
+        CommandCapture fleetForecast = execute("fleet", "forecast",
+                "--days", "14",
+                "--target-utilization", "0.65",
+                "--reserve-ratio", "0.15",
+                "--job-gpu-hours", "12",
+                "--jobs-per-day", "2");
+        assertEquals(0, fleetForecast.exitCode());
+        assertTrue(fleetForecast.stdout().contains("usableGpuHoursPerDay"));
+
+        CommandCapture fleetDoctor = execute("fleet", "doctor", "--max-scan-age-min", "1000000");
+        assertEquals(0, fleetDoctor.exitCode());
+        assertTrue(fleetDoctor.stdout().contains("Doctor summary"));
+
         CommandCapture secretPut = execute("secret", "put", "--name", "wandb", "--provider", "env", "--ref", "WANDB_API_KEY", "--env", "WANDB_API_KEY");
         assertEquals(0, secretPut.exitCode());
         CommandCapture secretList = execute("secret", "list");

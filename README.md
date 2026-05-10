@@ -196,6 +196,7 @@ gpum watch job-20260510-001
 - [Installation](docs/installation.md)
 - [Operating flow](docs/operating-flow.md)
 - [Safety and limits](docs/safety.md)
+- [Fleet intelligence](docs/fleet.md)
 - [All CLI command examples](docs/commands.md)
 - [Operational recipes](docs/recipes.md)
 - [Production operations](docs/operations.md)

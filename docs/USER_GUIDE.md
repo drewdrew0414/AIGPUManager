@@ -18,7 +18,8 @@ This guide connects the multilingual README files with the operational documents
 2. [Installation](installation.md)에서 운영체제별 설치 방식을 확인합니다.
 3. [Operating flow](operating-flow.md)에서 `scan -> submit -> watch -> report`가 어떻게 이어지는지 확인합니다.
 4. [Safety and limits](safety.md)에서 물리적 손상, 예외, 한도 초과 방지 정책을 검토합니다.
-5. [All CLI command examples](commands.md)에서 모든 명령어 예시를 확인합니다.
+5. [Fleet intelligence](fleet.md)에서 전체 플릿 capacity, risk, validate, forecast, doctor 명령을 확인합니다.
+6. [All CLI command examples](commands.md)에서 모든 명령어 예시를 확인합니다.
 
 ## English
 
@@ -26,7 +27,8 @@ This guide connects the multilingual README files with the operational documents
 2. Use [Installation](installation.md) for OS-specific installation commands.
 3. Read [Operating flow](operating-flow.md) to understand how `scan -> submit -> watch -> report` connects.
 4. Review [Safety and limits](safety.md) for physical damage prevention, exception handling, and quota enforcement.
-5. Check [All CLI command examples](commands.md) for every command with dummy values.
+5. Read [Fleet intelligence](fleet.md) for capacity, risk, validation, forecast, and doctor reports.
+6. Check [All CLI command examples](commands.md) for every command with dummy values.
 
 ## 中文
 
@@ -34,7 +36,8 @@ This guide connects the multilingual README files with the operational documents
 2. 在 [Installation](installation.md) 查看不同操作系统的安装命令。
 3. 阅读 [Operating flow](operating-flow.md)，理解 `scan -> submit -> watch -> report` 的衔接方式。
 4. 阅读 [Safety and limits](safety.md)，确认物理损伤预防、异常处理和配额限制策略。
-5. 在 [All CLI command examples](commands.md) 查看所有使用示例。
+5. 阅读 [Fleet intelligence](fleet.md)，了解 capacity、risk、validate、forecast、doctor 报告。
+6. 在 [All CLI command examples](commands.md) 查看所有使用示例。
 
 ## 日本語
 
@@ -42,7 +45,8 @@ This guide connects the multilingual README files with the operational documents
 2. [Installation](installation.md) で OS 別のインストール手順を確認します。
 3. [Operating flow](operating-flow.md) で `scan -> submit -> watch -> report` のつながりを理解します。
 4. [Safety and limits](safety.md) で物理的損傷の予防、例外処理、上限超過防止を確認します。
-5. [All CLI command examples](commands.md) ですべてのコマンド例を確認します。
+5. [Fleet intelligence](fleet.md) で capacity、risk、validate、forecast、doctor レポートを確認します。
+6. [All CLI command examples](commands.md) ですべてのコマンド例を確認します。
 
 ## Shared References
 
@@ -52,6 +56,7 @@ This guide connects the multilingual README files with the operational documents
 - [Installation](installation.md)
 - [Operating flow](operating-flow.md)
 - [Safety and limits](safety.md)
+- [Fleet intelligence](fleet.md)
 - [All CLI command examples](commands.md)
 - [Operational recipes](recipes.md)
 - [Production operations](operations.md)

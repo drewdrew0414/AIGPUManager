@@ -7,6 +7,7 @@ import com.drewdrew1.cli.commands.AuditCommand;
 import com.drewdrew1.cli.commands.ComputeCommand;
 import com.drewdrew1.cli.commands.DataCommand;
 import com.drewdrew1.cli.commands.DevCommand;
+import com.drewdrew1.cli.commands.FleetCommand;
 import com.drewdrew1.cli.commands.GpuCommand;
 import com.drewdrew1.cli.commands.IntegrationCommand;
 import com.drewdrew1.cli.commands.JobCommand;
@@ -57,6 +58,7 @@ import java.time.Duration;
                 RuntimeCommand.class,
                 SecretCommand.class,
                 DevCommand.class,
+                FleetCommand.class,
                 ServerCommand.class,
                 SystemCommand.class
         }

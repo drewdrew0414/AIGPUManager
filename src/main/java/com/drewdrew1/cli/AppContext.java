@@ -15,6 +15,7 @@ import com.drewdrew1.core.service.AuditService;
 import com.drewdrew1.core.service.CapabilityResolver;
 import com.drewdrew1.core.service.ContainerReconcileService;
 import com.drewdrew1.core.service.EnterpriseOpsService;
+import com.drewdrew1.core.service.FleetAnalysisService;
 import com.drewdrew1.core.service.GovernanceService;
 import com.drewdrew1.core.service.GpuControlService;
 import com.drewdrew1.core.service.GpuProcessService;
@@ -84,6 +85,7 @@ public class AppContext {
     private SchedulingEngineService schedulingEngineService;
     private ContainerReconcileService containerReconcileService;
     private EnterpriseOpsService enterpriseOpsService;
+    private FleetAnalysisService fleetAnalysisService;
 
     public AppContext(Path dbPath, Duration commandTimeout, GpumConfig config) {
         this.dbPath = dbPath;
@@ -348,5 +350,19 @@ public class AppContext {
             );
         }
         return enterpriseOpsService;
+    }
+
+    public FleetAnalysisService fleetAnalysisService() {
+        if (fleetAnalysisService == null) {
+            fleetAnalysisService = new FleetAnalysisService(
+                    inventoryRepository(),
+                    allocationRepository(),
+                    opsRepository(),
+                    runtimeRepository(),
+                    healthScoringService(),
+                    config
+            );
+        }
+        return fleetAnalysisService;
     }
 }

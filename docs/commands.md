@@ -12,6 +12,23 @@ gpum --config gpum.example.yaml system config
 gpum --command-timeout-sec 30 system health
 ```
 
+## Fleet
+
+Fleet commands are read-only production analysis commands. They combine inventory, allocations, runtime workers, node attributes, health scores, and safety policies before you submit or move workloads.
+
+```bash
+gpum fleet capacity
+gpum fleet capacity --by-model
+gpum fleet risk --max-scan-age-min 30 --min-free-vram-ratio 0.05
+gpum fleet risk --max-scan-age-min 15 --fail-on critical
+gpum fleet risk --max-scan-age-min 15 --fail-on warn
+gpum fleet validate --gpus 2 --vram 80000 --hours 6 --cpu-cores 16 --memory-mb 131072 --shm-size 64g --model H100 --label-selector role=trainer --strategy packed --image registry.example.com/ml/train:1.1.0 --command "python train.py"
+gpum fleet validate --gpus 8 --vram 80000 --hours 12 --strategy spread --image registry.example.com/ml/ddp:1.1.0 --command "torchrun --nproc_per_node=8 train.py" --fail-on-warn
+gpum fleet forecast --days 14 --target-utilization 0.70 --reserve-ratio 0.20 --job-gpu-hours 32 --jobs-per-day 6
+gpum fleet doctor --max-scan-age-min 30
+gpum fleet doctor --max-scan-age-min 15 --fail-on-critical
+```
+
 ## Node
 
 ```bash
@@ -313,4 +330,3 @@ gpum system backup --path backups/gpum-backup.db
 gpum system restore --path backups/gpum-backup.db
 gpum system update
 ```
-

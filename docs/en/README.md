@@ -97,6 +97,7 @@ See [Safety and limits](../safety.md) for full details.
 - [Installation](../installation.md)
 - [Operating flow](../operating-flow.md)
 - [Safety and limits](../safety.md)
+- [Fleet intelligence](../fleet.md)
 - [All CLI command examples](../commands.md)
 - [Operational recipes](../recipes.md)
 - [Production operations](../operations.md)
