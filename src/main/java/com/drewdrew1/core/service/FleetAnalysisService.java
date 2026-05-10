@@ -119,8 +119,10 @@ public class FleetAnalysisService {
     public RiskReport risk(RiskOptions options) {
         initializeReadModels();
         RiskOptions effective = options == null ? RiskOptions.defaults() : options;
-        SafetyPolicy safetyPolicy = safetyPolicy();
+        SafetyPolicyReport policyReport = safetyPolicyReport();
+        SafetyPolicy safetyPolicy = policyReport.policy();
         List<RiskFinding> findings = new ArrayList<>();
+        findings.addAll(policyReport.findings());
         List<NodeInventory> nodes = inventoryRepository.listNodes();
         List<GpuDevice> gpus = inventoryRepository.listGpus();
         List<AllocationRecord> active = allocationRepository.listActive();
@@ -135,7 +137,18 @@ public class FleetAnalysisService {
         }
 
         for (NodeInventory node : nodes) {
+            if (node.lastScannedAt() == null) {
+                findings.add(new RiskFinding("CRITICAL", "inventory", node.hostname(),
+                        "node scan timestamp is missing",
+                        "Refresh inventory and confirm detector persistence."));
+                continue;
+            }
             long scanAgeMinutes = Duration.between(node.lastScannedAt(), now).toMinutes();
+            if (scanAgeMinutes < -5) {
+                findings.add(new RiskFinding("WARN", "inventory", node.hostname(),
+                        "scan timestamp is in the future: " + node.lastScannedAt(),
+                        "Check node clock synchronization and NTP."));
+            }
             if (scanAgeMinutes > effective.maxScanAgeMinutes() * 4L) {
                 findings.add(new RiskFinding("CRITICAL", "inventory", node.hostname(),
                         "scan is very stale: " + scanAgeMinutes + "m",
@@ -210,7 +223,34 @@ public class FleetAnalysisService {
                         "GPU UUID is missing",
                         "Refresh inventory; UUID-based allocation is safer than index-based allocation."));
             }
+            if (gpu.driverVersion() == null || gpu.driverVersion().isBlank()) {
+                findings.add(new RiskFinding("WARN", "inventory", target,
+                        "driver version is missing",
+                        "Refresh inventory and verify vendor tooling output."));
+            }
+            if (gpu.vramTotalMb() != null && gpu.vramFreeMb() != null && gpu.vramFreeMb() > gpu.vramTotalMb()) {
+                findings.add(new RiskFinding("CRITICAL", "inventory", target,
+                        "free VRAM is greater than total VRAM",
+                        "Do not schedule until inventory parsing is corrected."));
+            }
+            if (gpu.temperatureC() != null && (gpu.temperatureC() < -20.0 || gpu.temperatureC() > 120.0)) {
+                findings.add(new RiskFinding("CRITICAL", "telemetry", target,
+                        "temperature is outside plausible range: " + format(gpu.temperatureC()) + "C",
+                        "Treat telemetry as invalid and inspect the sensor path."));
+            }
+            if (gpu.powerLimitW() != null && gpu.powerLimitW() > safetyPolicy.maxPowerLimitW()) {
+                findings.add(new RiskFinding("WARN", "power", target,
+                        "power limit exceeds policy maxPowerLimitW=" + safetyPolicy.maxPowerLimitW(),
+                        "Lower the device cap or update policy through approval."));
+            }
+            if (Boolean.FALSE.equals(gpu.supportsContainerRuntime())) {
+                findings.add(new RiskFinding("WARN", "runtime", target,
+                        "GPU is not marked container-runtime capable",
+                        "Avoid container jobs until device pass-through is verified."));
+            }
         }
+
+        findings.addAll(inventoryIdentityFindings(gpus, active));
 
         for (AllocationRecord allocation : active) {
             if (allocation.expiresAt().isBefore(now)) {
@@ -241,10 +281,21 @@ public class FleetAnalysisService {
                             "allocation is on blocked node " + device.nodeHostname(),
                             "Move or release the allocation before the node is maintained."));
                 }
+                if (!gpuInventoryKeys(gpus).contains(deviceKey(device))) {
+                    findings.add(new RiskFinding("CRITICAL", "allocation", allocation.id(),
+                            "allocation references unknown GPU " + device.nodeHostname() + ":" + safe(device.deviceId()),
+                            "Release and recreate the allocation after inventory refresh."));
+                }
             }
         }
 
         for (RuntimeWorkerRecord worker : runtimeRepository.listWorkers()) {
+            if (worker.allocationId() != null && !worker.allocationId().isBlank()
+                    && allocationRepository.findById(worker.allocationId()).isEmpty()) {
+                findings.add(new RiskFinding("CRITICAL", "runtime", worker.id(),
+                        "worker references missing allocation " + worker.allocationId(),
+                        "Stop or re-register the worker with a valid allocation."));
+            }
             if (worker.restartCount() >= worker.maxRestarts()) {
                 findings.add(new RiskFinding("CRITICAL", "runtime", worker.id(),
                         "restart count reached maxRestarts=" + worker.maxRestarts(),
@@ -263,6 +314,8 @@ public class FleetAnalysisService {
                 }
             }
         }
+
+        findings.addAll(opsRiskFindings(safetyPolicy, gpus, active, now));
 
         if (opsRepository.list("system", "safety-policy").isEmpty()) {
             findings.add(new RiskFinding("WARN", "governance", "safety-policy",
@@ -306,7 +359,7 @@ public class FleetAnalysisService {
 
     public WorkloadValidationResult validateWorkload(WorkloadValidationRequest request) {
         initializeReadModels();
-        SafetyPolicy policy = safetyPolicy();
+        SafetyPolicy policy = safetyPolicyReport().policy();
         CapacityReport capacity = capacity();
         List<ValidationCheck> checks = new ArrayList<>();
         addCheck(checks, request.gpus() > 0, "BLOCK", "request.gpus", "GPU count must be > 0", "Set --gpus to a positive number.");
@@ -327,11 +380,15 @@ public class FleetAnalysisService {
         }
         if (request.command() == null || request.command().isBlank()) {
             checks.add(new ValidationCheck("WARN", "job.command", "Command is empty", "Provide --command before submission."));
+        } else {
+            checks.addAll(commandSafetyChecks(request.command()));
         }
         if (request.image() == null || request.image().isBlank()) {
             checks.add(new ValidationCheck("WARN", "job.image", "Container image is empty", "Use an immutable image tag for reproducible execution."));
         } else if (request.image().endsWith(":latest")) {
             checks.add(new ValidationCheck("WARN", "job.image", "Image tag uses latest", "Pin an explicit version or digest for reproducibility."));
+        } else if (!hasPinnedImageReference(request.image())) {
+            checks.add(new ValidationCheck("WARN", "job.image", "Image tag is not explicit", "Use an explicit tag or digest for reproducibility."));
         }
         if (request.cpuCores() != null) {
             boolean cpuFeasible = capacity.nodes().stream()
@@ -348,6 +405,21 @@ public class FleetAnalysisService {
             addCheck(checks, memoryFeasible, "BLOCK", "node.memory",
                     "At least one ready node must have requested RAM",
                     "Lower --memory-mb or add capacity.");
+        }
+
+        if (!selectorSyntaxValid(request.labelSelector())) {
+            checks.add(new ValidationCheck("BLOCK", "selector.syntax", "label-selector syntax is invalid", "Use key=value[,key=value]."));
+        }
+        if (request.gpus() >= 8 && request.command() != null && !request.command().contains("torchrun")
+                && !request.command().contains("deepspeed") && !request.command().contains("accelerate")) {
+            checks.add(new ValidationCheck("WARN", "distributed.launcher",
+                    "Large GPU request does not look like a distributed launcher",
+                    "Use torchrun, deepspeed, accelerate, or document why a single-process launcher is correct."));
+        }
+        if (request.hours() >= 12 && request.command() != null && !request.command().toLowerCase(Locale.ROOT).contains("checkpoint")) {
+            checks.add(new ValidationCheck("WARN", "checkpoint.policy",
+                    "Long-running job command does not mention checkpointing",
+                    "Configure periodic checkpoint save and restore before long leases."));
         }
 
         PlacementFit fit = placementFit(request);
@@ -406,6 +478,11 @@ public class FleetAnalysisService {
     }
 
     private PlacementFit placementFit(WorkloadValidationRequest request) {
+        if (!selectorSyntaxValid(request.labelSelector())) {
+            return new PlacementFit(false, null,
+                    "Label selector syntax is invalid.",
+                    "Use key=value[,key=value] with non-empty keys and values.");
+        }
         List<AllocationRecord> active = allocationRepository.listActive();
         Set<String> used = allocatedGpuKeys(active);
         Map<String, Map<String, String>> attrs = inventoryRepository.listNodeAttributes();
@@ -499,7 +576,7 @@ public class FleetAnalysisService {
         runtimeRepository.initialize();
     }
 
-    private SafetyPolicy safetyPolicy() {
+    private SafetyPolicyReport safetyPolicyReport() {
         SafetyPolicy defaults = new SafetyPolicy(
                 128,
                 720,
@@ -511,18 +588,25 @@ public class FleetAnalysisService {
         );
         List<OpsRecord> policies = opsRepository.list("system", "safety-policy");
         if (policies.isEmpty()) {
-            return defaults;
+            return new SafetyPolicyReport(defaults, List.of());
         }
         Map<String, String> metadata = policies.getFirst().metadata();
-        return new SafetyPolicy(
-                intValue(metadata, "maxGpusPerRequest", defaults.maxGpusPerRequest()),
-                intValue(metadata, "maxLeaseHours", defaults.maxLeaseHours()),
-                doubleValue(metadata, "thermalWarnC", defaults.thermalWarnC()),
-                doubleValue(metadata, "thermalCriticalC", defaults.thermalCriticalC()),
-                doubleValue(metadata, "minFreeVramRatio", defaults.minFreeVramRatio()),
-                intValue(metadata, "maxPowerLimitW", defaults.maxPowerLimitW()),
-                intValue(metadata, "maxJobShmGb", defaults.maxJobShmGb())
+        List<RiskFinding> findings = new ArrayList<>();
+        SafetyPolicy policy = new SafetyPolicy(
+                intValue(metadata, "maxGpusPerRequest", defaults.maxGpusPerRequest(), 1, 4096, findings),
+                intValue(metadata, "maxLeaseHours", defaults.maxLeaseHours(), 1, 8760, findings),
+                doubleValue(metadata, "thermalWarnC", defaults.thermalWarnC(), 1.0, 110.0, findings),
+                doubleValue(metadata, "thermalCriticalC", defaults.thermalCriticalC(), 1.0, 120.0, findings),
+                doubleValue(metadata, "minFreeVramRatio", defaults.minFreeVramRatio(), 0.0, 1.0, findings),
+                intValue(metadata, "maxPowerLimitW", defaults.maxPowerLimitW(), 1, 2000, findings),
+                intValue(metadata, "maxJobShmGb", defaults.maxJobShmGb(), 1, 4096, findings)
         );
+        if (policy.thermalWarnC() >= policy.thermalCriticalC()) {
+            findings.add(new RiskFinding("WARN", "governance", "safety-policy",
+                    "thermalWarnC is not lower than thermalCriticalC; using configured values but policy is inconsistent",
+                    "Store a corrected policy where thermal-warn-c is lower than thermal-critical-c."));
+        }
+        return new SafetyPolicyReport(policy, findings);
     }
 
     private Map<String, Integer> allocatedGpuCountByNode(List<AllocationRecord> allocations) {
@@ -540,6 +624,105 @@ public class FleetAnalysisService {
                 .flatMap(allocation -> allocation.devices().stream())
                 .map(this::deviceKey)
                 .collect(Collectors.toSet());
+    }
+
+    private Set<String> gpuInventoryKeys(List<GpuDevice> gpus) {
+        return gpus.stream()
+                .flatMap(gpu -> List.of(gpuKey(gpu), gpu.nodeHostname() + ":" + safe(gpu.deviceId())).stream())
+                .collect(Collectors.toSet());
+    }
+
+    private List<RiskFinding> inventoryIdentityFindings(List<GpuDevice> gpus, List<AllocationRecord> active) {
+        List<RiskFinding> findings = new ArrayList<>();
+        Map<String, Integer> gpuKeys = new LinkedHashMap<>();
+        Map<String, Integer> physicalSlots = new LinkedHashMap<>();
+        for (GpuDevice gpu : gpus) {
+            gpuKeys.merge(gpuKey(gpu), 1, Integer::sum);
+            physicalSlots.merge(gpu.nodeHostname() + ":" + safe(gpu.deviceId()), 1, Integer::sum);
+        }
+        for (Map.Entry<String, Integer> entry : gpuKeys.entrySet()) {
+            if (entry.getValue() > 1) {
+                findings.add(new RiskFinding("CRITICAL", "inventory", entry.getKey(),
+                        "duplicate GPU identity appears " + entry.getValue() + " times",
+                        "Refresh inventory and fix duplicate UUID/device mapping before scheduling."));
+            }
+        }
+        for (Map.Entry<String, Integer> entry : physicalSlots.entrySet()) {
+            if (entry.getValue() > 1) {
+                findings.add(new RiskFinding("CRITICAL", "inventory", entry.getKey(),
+                        "duplicate node/device slot appears " + entry.getValue() + " times",
+                        "Fix detector output or persistence before allocation."));
+            }
+        }
+        Map<String, String> claimOwners = new LinkedHashMap<>();
+        for (AllocationRecord allocation : active) {
+            for (AllocationDevice device : allocation.devices()) {
+                String key = deviceKey(device);
+                String previous = claimOwners.putIfAbsent(key, allocation.id());
+                if (previous != null && !previous.equals(allocation.id())) {
+                    findings.add(new RiskFinding("CRITICAL", "allocation", key,
+                            "GPU is claimed by multiple active allocations: " + previous + "," + allocation.id(),
+                            "Release one allocation and run gpum system db-check --orphan-clean."));
+                }
+            }
+        }
+        return findings;
+    }
+
+    private List<RiskFinding> opsRiskFindings(SafetyPolicy safetyPolicy, List<GpuDevice> gpus, List<AllocationRecord> active, Instant now) {
+        List<RiskFinding> findings = new ArrayList<>();
+        int allocatableGpus = Math.max(0, gpus.size() - active.stream().mapToInt(record -> record.devices().size()).sum());
+        for (OpsRecord queue : opsRepository.list("schedule", "queue")) {
+            int maxGpus = parseIntOrDefault(queue.metadata().get("maxGpus"), -1);
+            if (maxGpus < 0) {
+                findings.add(new RiskFinding("WARN", "scheduling", queue.name(),
+                        "queue maxGpus metadata is missing or invalid",
+                        "Recreate the queue with an explicit --max-gpus value."));
+            } else if (maxGpus > Math.max(1, gpus.size())) {
+                findings.add(new RiskFinding("WARN", "scheduling", queue.name(),
+                        "queue maxGpus exceeds physical fleet GPUs",
+                        "Lower the queue cap or add capacity before relying on this queue."));
+            }
+        }
+        for (OpsRecord reservation : opsRepository.list("schedule", "reservation")) {
+            int gpusRequested = parseIntOrDefault(reservation.metadata().get("gpus"), -1);
+            Instant end = parseInstantOrNull(reservation.metadata().get("end"));
+            if (end != null && end.isBefore(now) && "RESERVED".equalsIgnoreCase(reservation.status())) {
+                findings.add(new RiskFinding("WARN", "scheduling", reservation.name(),
+                        "reservation ended but is still marked RESERVED",
+                        "Cancel or archive the reservation record."));
+            }
+            if (gpusRequested > Math.max(1, gpus.size())) {
+                findings.add(new RiskFinding("CRITICAL", "scheduling", reservation.name(),
+                        "reservation requests more GPUs than the fleet owns",
+                        "Reduce reservation size or add nodes before the start window."));
+            } else if (gpusRequested > allocatableGpus && end != null && end.isAfter(now)) {
+                findings.add(new RiskFinding("WARN", "scheduling", reservation.name(),
+                        "reservation requests more GPUs than currently free",
+                        "Confirm expected releases or preemptions before the reservation starts."));
+            }
+        }
+        for (OpsRecord telemetry : opsRepository.list("observe", "telemetry")) {
+            int intervalSec = parseIntOrDefault(telemetry.metadata().get("intervalSec"), -1);
+            if (intervalSec > 0 && intervalSec < Math.max(1, config.getMonitoring().getScanMinIntervalSec())) {
+                findings.add(new RiskFinding("WARN", "observability", telemetry.name(),
+                        "telemetry interval is below scanMinIntervalSec",
+                        "Increase telemetry interval to avoid noisy polling."));
+            }
+        }
+        for (OpsRecord budget : opsRepository.list("governance", "budget")) {
+            if ("OVER_BUDGET".equalsIgnoreCase(budget.status())) {
+                findings.add(new RiskFinding("WARN", "finops", budget.name(),
+                        "budget record is over budget",
+                        "Notify owner or lower queue priority until budget is adjusted."));
+            }
+        }
+        if (safetyPolicy.maxGpusPerRequest() > Math.max(1, gpus.size())) {
+            findings.add(new RiskFinding("WARN", "governance", "safety-policy",
+                    "maxGpusPerRequest exceeds physical fleet size",
+                    "Lower max-gpus-per-request to the actual production envelope."));
+        }
+        return findings;
     }
 
     private List<String> blockers(Map<String, String> attrs) {
@@ -588,6 +771,23 @@ public class FleetAnalysisService {
             }
             String actual = attrs.get("label." + kv[0].trim());
             if (actual == null || !actual.equalsIgnoreCase(kv[1].trim())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean selectorSyntaxValid(String selector) {
+        if (selector == null || selector.isBlank()) {
+            return true;
+        }
+        for (String part : selector.split(",")) {
+            String trimmed = part.trim();
+            if (trimmed.isBlank()) {
+                return false;
+            }
+            String[] kv = trimmed.split("=", 2);
+            if (kv.length != 2 || kv[0].isBlank() || kv[1].isBlank()) {
                 return false;
             }
         }
@@ -655,6 +855,46 @@ public class FleetAnalysisService {
 
     private void addCheck(List<ValidationCheck> checks, boolean condition, String failSeverity, String name, String message, String action) {
         checks.add(new ValidationCheck(condition ? "PASS" : failSeverity, name, message, condition ? "No action required." : action));
+    }
+
+    private List<ValidationCheck> commandSafetyChecks(String command) {
+        String normalized = command.toLowerCase(Locale.ROOT).replace('\\', '/');
+        List<ValidationCheck> checks = new ArrayList<>();
+        if (normalized.contains("nvidia-smi") && normalized.contains("--gpu-reset")) {
+            checks.add(new ValidationCheck("BLOCK", "command.hardware-reset",
+                    "Command attempts GPU reset",
+                    "Use guarded gpum gpu reset workflow with drain, approval, and hardware-write opt-in."));
+        }
+        if (normalized.contains("rm -rf /") || normalized.contains("mkfs.") || normalized.contains("mkfs ")
+                || normalized.contains("dd if=") || normalized.contains("format c:")
+                || normalized.contains("del /s /q c:/") || normalized.contains("del /f /s /q c:/")) {
+            checks.add(new ValidationCheck("BLOCK", "command.destructive",
+                    "Command contains destructive host-level operation",
+                    "Remove destructive shell operations from the job command."));
+        }
+        if (normalized.contains("sudo ") || normalized.contains("runas ")) {
+            checks.add(new ValidationCheck("WARN", "command.privilege",
+                    "Command requests privilege escalation",
+                    "Prefer container capabilities, RBAC approval, or a dedicated maintenance workflow."));
+        }
+        if ((normalized.contains("curl ") || normalized.contains("wget ")) && (normalized.contains("| sh") || normalized.contains("| bash"))) {
+            checks.add(new ValidationCheck("WARN", "command.remote-shell",
+                    "Command pipes remote content into a shell",
+                    "Pin artifacts and verify checksums instead of executing remote content directly."));
+        }
+        if (checks.isEmpty()) {
+            checks.add(new ValidationCheck("PASS", "command.safety", "No high-risk shell pattern detected", "No action required."));
+        }
+        return checks;
+    }
+
+    private boolean hasPinnedImageReference(String image) {
+        if (image.contains("@sha256:")) {
+            return true;
+        }
+        int lastSlash = image.lastIndexOf('/');
+        int lastColon = image.lastIndexOf(':');
+        return lastColon > lastSlash && lastColon < image.length() - 1;
     }
 
     private static int severityRank(String severity) {
@@ -729,14 +969,70 @@ public class FleetAnalysisService {
         return max;
     }
 
-    private static int intValue(Map<String, String> metadata, String key, int fallback) {
+    private static int intValue(Map<String, String> metadata, String key, int fallback, int min, int max, List<RiskFinding> findings) {
         String value = metadata.get(key);
-        return value == null || value.isBlank() ? fallback : Integer.parseInt(value);
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            int parsed = Integer.parseInt(value);
+            if (parsed < min || parsed > max) {
+                findings.add(new RiskFinding("WARN", "governance", "safety-policy",
+                        key + " is outside supported range and fallback is used: " + value,
+                        "Store a corrected safety policy value."));
+                return fallback;
+            }
+            return parsed;
+        } catch (NumberFormatException e) {
+            findings.add(new RiskFinding("WARN", "governance", "safety-policy",
+                    key + " is not a valid integer and fallback is used: " + value,
+                    "Store a corrected safety policy value."));
+            return fallback;
+        }
     }
 
-    private static double doubleValue(Map<String, String> metadata, String key, double fallback) {
+    private static double doubleValue(Map<String, String> metadata, String key, double fallback, double min, double max, List<RiskFinding> findings) {
         String value = metadata.get(key);
-        return value == null || value.isBlank() ? fallback : Double.parseDouble(value);
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            double parsed = Double.parseDouble(value);
+            if (!Double.isFinite(parsed) || parsed < min || parsed > max) {
+                findings.add(new RiskFinding("WARN", "governance", "safety-policy",
+                        key + " is outside supported range and fallback is used: " + value,
+                        "Store a corrected safety policy value."));
+                return fallback;
+            }
+            return parsed;
+        } catch (NumberFormatException e) {
+            findings.add(new RiskFinding("WARN", "governance", "safety-policy",
+                    key + " is not a valid number and fallback is used: " + value,
+                    "Store a corrected safety policy value."));
+            return fallback;
+        }
+    }
+
+    private static int parseIntOrDefault(String value, int fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private static Instant parseInstantOrNull(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Instant.parse(value);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private interface LongReader {
@@ -867,6 +1163,9 @@ public class FleetAnalysisService {
             int maxPowerLimitW,
             int maxJobShmGb
     ) {
+    }
+
+    private record SafetyPolicyReport(SafetyPolicy policy, List<RiskFinding> findings) {
     }
 
     private record PlacementFit(boolean feasible, String selectedNode, String reason, String recommendation) {

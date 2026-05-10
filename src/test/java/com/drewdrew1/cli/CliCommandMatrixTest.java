@@ -2,8 +2,10 @@ package com.drewdrew1.cli;
 
 import com.drewdrew1.App;
 import com.drewdrew1.core.model.AllocationRecord;
+import com.drewdrew1.core.model.OpsRecord;
 import com.drewdrew1.infra.persistence.SqliteAllocationRepository;
 import com.drewdrew1.infra.persistence.SqliteInventoryRepository;
+import com.drewdrew1.infra.persistence.SqliteOpsRepository;
 import com.drewdrew1.testsupport.TestInventoryFixtures;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -15,7 +17,9 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -264,6 +268,36 @@ class CliCommandMatrixTest {
                 "--command", "python train.py");
         assertEquals(0, fleetValidate.exitCode());
         assertTrue(fleetValidate.stdout().contains("Validation allowed=true"));
+
+        CommandCapture invalidSelector = execute("fleet", "validate",
+                "--gpus", "1",
+                "--label-selector", "role",
+                "--command", "python train.py");
+        assertEquals(2, invalidSelector.exitCode());
+        assertTrue(invalidSelector.stdout().contains("selector.syntax"));
+
+        CommandCapture dangerousCommand = execute("fleet", "validate",
+                "--gpus", "1",
+                "--command", "nvidia-smi --gpu-reset -i 0");
+        assertEquals(2, dangerousCommand.exitCode());
+        assertTrue(dangerousCommand.stdout().contains("command.hardware-reset"));
+
+        Instant now = Instant.now();
+        new SqliteOpsRepository(dbPath).upsert(new OpsRecord(
+                "policy-corrupt",
+                "system",
+                "safety-policy",
+                "corrupt-policy",
+                "test",
+                "cluster",
+                "ACTIVE",
+                Map.of("maxGpusPerRequest", "not-an-int", "thermalWarnC", "NaN"),
+                now,
+                now.minusSeconds(1)
+        ));
+        CommandCapture corruptPolicyRisk = execute("fleet", "risk", "--max-scan-age-min", "1000000");
+        assertEquals(0, corruptPolicyRisk.exitCode());
+        assertTrue(corruptPolicyRisk.stdout().contains("fallback is used"));
 
         CommandCapture fleetForecast = execute("fleet", "forecast",
                 "--days", "14",

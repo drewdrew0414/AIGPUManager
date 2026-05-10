@@ -30,6 +30,8 @@ Included behavior:
 - workload pre-submit validation for GPU count, VRAM, CPU, RAM, `/dev/shm`, image pinning, label selectors, and packed/spread placement
 - GPU-hour runway forecasting with utilization target, reserve ratio, job GPU-hour size, and daily demand
 - combined operator doctor report for handoff, incident review, and daily readiness checks
+- malformed safety-policy metadata fallback with warnings instead of report crashes
+- critical findings for duplicate GPU identities, duplicate active claims, unknown allocation devices, invalid telemetry, risky shell commands, stale reservations, and runtime workers pointing at missing allocations
 
 ### 1. Compute Policy Layer
 

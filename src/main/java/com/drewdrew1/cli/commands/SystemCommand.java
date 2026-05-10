@@ -660,17 +660,39 @@ public class SystemCommand implements Runnable {
 
     private static int intValue(Map<String, String> metadata, String key, int fallback) {
         String value = metadata.get(key);
-        return value == null || value.isBlank() ? fallback : Integer.parseInt(value);
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
     private static long longValue(Map<String, String> metadata, String key, long fallback) {
         String value = metadata.get(key);
-        return value == null || value.isBlank() ? fallback : Long.parseLong(value);
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
     private static double doubleValue(Map<String, String> metadata, String key, double fallback) {
         String value = metadata.get(key);
-        return value == null || value.isBlank() ? fallback : Double.parseDouble(value);
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            double parsed = Double.parseDouble(value);
+            return Double.isFinite(parsed) ? parsed : fallback;
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
     private static Map<String, String> mapOf(String... values) {

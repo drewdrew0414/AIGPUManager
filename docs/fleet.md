@@ -11,6 +11,7 @@ Version: **1.1.0**
 - [中文](#中文)
 - [日本語](#日本語)
 - [Command Examples](#command-examples)
+- [Exception and Error Hardening](#exception-and-error-hardening)
 - [How It Fits the Workflow](#how-it-fits-the-workflow)
 
 ## 한국어
@@ -96,6 +97,21 @@ gpum fleet forecast --days 14 --target-utilization 0.70 --reserve-ratio 0.20 --j
 gpum fleet doctor --max-scan-age-min 30
 gpum fleet doctor --max-scan-age-min 15 --fail-on-critical
 ```
+
+## Exception and Error Hardening
+
+`fleet` now treats malformed or risky state as reportable findings instead of letting the analysis crash whenever possible.
+
+- Malformed `system safety policy` metadata falls back to safe defaults and emits a governance warning.
+- Invalid `label-selector` syntax is returned as a `BLOCK` validation check instead of an uncaught exception.
+- Duplicate GPU UUIDs, duplicate node/device slots, and multiple active allocation claims on one GPU are reported as critical findings.
+- Active allocations that reference GPUs no longer present in inventory are reported as critical findings.
+- Implausible telemetry such as free VRAM greater than total VRAM or impossible temperatures is reported.
+- Missing driver versions and missing GPU UUIDs are reported as inventory quality warnings.
+- Commands containing GPU reset, destructive filesystem formatting/deletion patterns, privilege escalation, or remote shell piping are flagged during `fleet validate`.
+- Mutable or unpinned container image references are flagged before submission.
+- Runtime workers that reference missing allocations are reported as critical runtime findings.
+- Queue, reservation, telemetry, and budget records are checked for invalid values, impossible GPU requests, stale reservations, noisy polling, and over-budget state.
 
 ## How It Fits the Workflow
 
